@@ -1,0 +1,66 @@
+#!/bin/bash
+# frame-ctl-logs start|stop <run-dir> : log collector behind `frame-ctl run`. Not meant to be called directly.
+#   start: background loop every $FRAMECTL_LOG_INTERVAL s (default 60): vrcmd --stats snapshot + JPEG screenshot
+#          (headset view, or $FRAMECTL_SHOT_WINDOW; "none" disables). Focus goes back to whatever had it.
+#   stop : stops the loop, then copies everything written since the run started (PC SteamVR + Steam logs, driver log,
+#          Frame Steam/SteamVR/XRService logs + journal, Proton logs, game/script-extender logs).
+# Config (env): FRAMECTL_FRAME_HOST (ssh alias, default "frame"), FRAMECTL_SHOT_WINDOW, FRAMECTL_GAME_LOG_DIRS (":"-separated dirs searched for new *.log/*.txt; defaults to all Proton prefixes'
+# "My Games" plus ~/Games/*/logs).
+set -u
+cmd=$1 d=$2
+STEAM=~/.local/share/Steam
+SV=$STEAM/steamapps/common/SteamVR
+VRCMD=$SV/bin/linux64/vrcmd
+HOST=${FRAMECTL_FRAME_HOST:-frame}
+STATE=~/.local/state/frame-ctl
+HERE=$(dirname "$(readlink -f "$0")")
+log(){ echo "$(date '+%F %T') $*"; }
+
+case $cmd in
+start)
+  date +%s > "$d/.start"; touch "$d/.start-marker"
+  mkdir -p "$d/stats" "$d/shots"
+  # byte offsets so stop copies only what this run wrote
+  for f in $STEAM/logs/*.txt $STATE/driver.log; do [ -f "$f" ] && echo "$(stat -c %s "$f") $f"; done > "$d/.offsets"
+  echo $$ > "$d/.collector.pid"
+  log "collector started"
+  while :; do
+    ts=$(date +%H%M%S)
+    timeout 15 $VRCMD --stats > "$d/stats/$ts.json" 2>&1
+    [ "${FRAMECTL_SHOT_WINDOW:-}" != none ] &&
+      FRAMECTL_NO_TIMELINE=1 "$HERE/frame-ctl" shot "$d/shots/$ts.jpg" ${FRAMECTL_SHOT_WINDOW:-vrview} >/dev/null 2>&1
+    sleep "${FRAMECTL_LOG_INTERVAL:-60}"
+  done;;
+stop)
+  pid=$(cat "$d/.collector.pid" 2>/dev/null) && kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null
+  start=$(cat "$d/.start"); since="@$start"
+  log "collecting since $(date -d "$since" '+%F %T')"
+  mkdir -p "$d/pc-steam-logs" "$d/frame" "$d/proton" "$d/game"
+  # PC: SteamVR / Steam logs, only bytes written during the run (whole file if it was rotated or is new)
+  for f in $STEAM/logs/*.txt $STATE/driver.log; do
+    [ -f "$f" ] && [ "$f" -nt "$d/.start-marker" ] || continue
+    off=$(awk -v f="$f" '$2==f {print $1}' "$d/.offsets"); size=$(stat -c %s "$f")
+    out="$d/pc-steam-logs/$(basename "$f")"; [ "$f" = $STATE/driver.log ] && out="$d/framectl-driver.log"
+    if [ -n "$off" ] && [ "$size" -ge "$off" ]; then tail -c +$((off + 1)) "$f" > "$out"; else cp "$f" "$out"; fi
+  done
+  timeout 20 $VRCMD --stats > "$d/stats/final.json" 2>&1
+  journalctl --user --since "$since" --no-pager > "$d/pc-journal-user.log" 2>&1
+  # Frame: Steam/SteamVR logs touched during the run, the newest XRService log (written only at service start),
+  # system and user journal
+  timeout 120 ssh -o ConnectTimeout=5 "$HOST" "cd ~/.local/share/Steam/logs && (find . -maxdepth 1 -type f -newermt '$(date -d "$since" '+%F %T')' -print0; ls -t XRService-*.log 2>/dev/null | head -1 | tr '\\n' '\\0') | tar --null -T - -czf -" \
+    > "$d/frame/steam-logs.tgz" 2>"$d/frame/ssh-errors.txt" && tar -xzf "$d/frame/steam-logs.tgz" -C "$d/frame" && rm "$d/frame/steam-logs.tgz"
+  timeout 60 ssh -o ConnectTimeout=5 "$HOST" "journalctl --since '$(date -d "$since" '+%F %T')' --no-pager" > "$d/frame/journal-system.log" 2>&1
+  timeout 60 ssh -o ConnectTimeout=5 "$HOST" "journalctl --user --since '$(date -d "$since" '+%F %T')' --no-pager" > "$d/frame/journal-user.log" 2>&1
+  # Proton (PROTON_LOG=1 writes ~/steam-<appid>.log) and game / script-extender logs (F4SE, SKSE, Buffout, MO2)
+  find ~ -maxdepth 1 -name 'steam-*.log' -newer "$d/.start-marker" -exec cp {} "$d/proton/" \;
+  dirs=${FRAMECTL_GAME_LOG_DIRS:-$(ls -d $STEAM/steamapps/compatdata/*/pfx/drive_c/users/steamuser/Documents/My\ Games ~/Games/*/logs 2>/dev/null | tr '\n' ':')}
+  IFS=: read -ra DIRS <<< "$dirs"
+  for g in "${DIRS[@]}"; do
+    [ -d "$g" ] || continue
+    find "$g" -type f \( -name '*.log' -o -name '*.txt' \) -newer "$d/.start-marker" -size -200M -print0 |
+      while IFS= read -r -d '' f; do rel=${f#"$g"/}; mkdir -p "$d/game/$(dirname "$rel")"; cp "$f" "$d/game/$rel"; done
+  done
+  ls -R "$d" > "$d/MANIFEST.txt"
+  log "done: $(du -sh "$d" | cut -f1)";;
+*) sed -n 2,9p "$0";;
+esac

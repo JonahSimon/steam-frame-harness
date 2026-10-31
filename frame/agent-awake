@@ -1,0 +1,8 @@
+#!/bin/sh
+# agent-awake on|off|status: make the Frame read as "worn" so it stays awake and games get focus unattended.
+# on/off restart the headset's SteamVR (the stream drops for a few seconds).
+case "$1" in
+on)  sudo systemctl enable --now agent-noprox; systemctl --user restart steamvr.service; echo on;;
+off) sudo systemctl disable --now agent-noprox; systemctl --user restart steamvr.service; echo off;;
+*)   systemctl is-active agent-noprox; /opt/steamvr/bin/linuxarm64/vrcmd --stats 2>/dev/null | grep activity_level;;
+esac

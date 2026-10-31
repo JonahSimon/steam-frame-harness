@@ -1,0 +1,9 @@
+[Unit]
+Description=Keep Frame awake when not worn (fake prox_far for SteamVR)
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/mount --bind /var/lib/agent-noprox/eeprom_console /usr/lib/deckard-eeprom/eeprom_console
+ExecStop=/usr/bin/umount /usr/lib/deckard-eeprom/eeprom_console
+[Install]
+WantedBy=multi-user.target

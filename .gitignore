@@ -1,0 +1,5 @@
+*.so
+*.so.new
+probe/vrprobe
+third_party/
+goal/

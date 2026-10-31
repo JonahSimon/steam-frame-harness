@@ -1,0 +1,402 @@
+#!/usr/bin/env python3
+"""frame-ctl: drive the Steam Frame (HMD + controllers) for unattended VR game tests. See README.md.
+
+  status                         driver, components, poses, activity level, Frame awake state
+  spawn | despawn                virtual Frame controllers on/off (use when the real ones are asleep)
+  press  <hand> <btn> [secs]     click+touch for secs (default 0.15) then release
+  hold   <hand> <btn>            press and keep held       release <hand> <btn|all>
+  trigger|grip <hand> <0..1>     analog value (>=0.9 also clicks); `off` releases
+  stick  <hand> <x> <y> [secs]   thumbstick deflection (-1..1); `off` releases; secs = hold then release
+  pose   <dev> <args...>         hmd|left|right: off | hold | x y z [qw qx qy qz] | head dx dy dz [q...]
+  worn   on|off                  PC-side /proximity override + Frame agent-awake (prox fake)
+  wake                           vrcmd --handlewakeup on PC and Frame
+  dash   hide|allow|status       keep the Frame's Steam dashboard closed so the game has input focus
+  shot   [out.png] [window]      screenshot: `vrview` (headset view, default) or a desktop window title
+  focus  [window]                activate the game's desktop window (games ignore input unfocused)
+  run    start <label> | stop | note <text>   per-run log folder (see README)
+  vr-restart                     restart PC SteamVR (reloads driver_framectl), wait until the Frame streams, spawn
+  launch <rungameid> [window]    Steam-launch a game, wait for its frames, then `dash hide`
+  bindings [app-key]             what each Frame input does in the app's loaded SteamVR binding (default: latest app)
+  watch                          live log of real headset button changes, injected input and game haptics
+  doctor                         check tools, driver, SteamVR build, VR View, headset ssh, CEF tunnel, input focus
+  raw    <driver command>        send a protocol line as-is
+hand = left|right|all. btn = a b x y menu view system bumper trigger grip thumbstick thumbrest dpad_up/down/left/right.
+"""
+import glob, json, os, re, shutil, socket, subprocess, sys, time
+
+# Config via env (see README).
+os.environ.setdefault("DISPLAY", ":0")
+PORT = 47823
+HOST = os.environ.get("FRAMECTL_FRAME_HOST", "frame")            # ssh alias of the headset
+AWAKE = os.environ.get("FRAMECTL_AWAKE_CMD", "~/bin/agent-awake")  # headset-side keep-awake toggle (see README)
+GAME_WIN = os.environ.get("FRAMECTL_SHOT_WINDOW", "")              # game desktop window title for focus/shot
+STATE = os.path.expanduser("~/.local/state/frame-ctl")
+RUNPTR = os.path.join(STATE, "current-run")
+SV = os.environ.get("STEAMVR", os.path.expanduser("~/.local/share/Steam/steamapps/common/SteamVR"))
+VRCMD = f"{SV}/bin/linux64/vrcmd"
+HERE = os.path.dirname(os.path.realpath(__file__))
+ANALOG = {"trigger", "grip"}
+
+
+def send(line, timeout=3):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(timeout)
+    s.sendto(line.encode(), ("127.0.0.1", PORT))
+    try:
+        r = s.recv(65535).decode()
+    except socket.timeout:
+        sys.exit("frame-ctl: no reply from driver_framectl on UDP 47823 (SteamVR not running or driver not loaded)")
+    timeline(line, r.splitlines()[0] if r else "")
+    return r
+
+
+def run_dir():
+    try:
+        d = open(RUNPTR).read().strip()
+        return d if os.path.isdir(d) else None
+    except OSError:
+        return None
+
+
+def timeline(cmd, result):
+    d = None if os.environ.get("FRAMECTL_NO_TIMELINE") else run_dir()
+    if d:
+        with open(os.path.join(d, "input-timeline.tsv"), "a") as f:
+            f.write(f"{time.strftime('%F %T')}.{int(time.time() * 1000) % 1000:03d}\t{cmd}\t{result}\n")
+
+
+def ok(r):
+    print(r.strip())
+    if r.startswith("err"):
+        sys.exit(1)
+
+
+def comps(btn):
+    if btn in ANALOG:
+        return [f"/input/{btn}/click", f"/input/{btn}/touch", f"/input/{btn}/value"]
+    if btn == "thumbrest":
+        return ["/input/thumbrest/touch"]
+    return [f"/input/{btn}/click", f"/input/{btn}/touch"]
+
+
+def setb(hand, btn, v):
+    for c in comps(btn):
+        ok(send(f"set {hand} {c} {v}"))
+
+
+def rel(hand, btn):
+    if btn == "all":
+        return ok(send(f"rel {hand} all"))
+    for c in comps(btn):
+        ok(send(f"rel {hand} {c}"))
+
+
+def sh(cmd, **kw):
+    return subprocess.run(cmd, shell=True, text=True, capture_output=True, **kw)
+
+
+DEPS = {"xdotool": "window focus", "spectacle": "screenshots (KDE)", "ssh": "headset access", "uv": "frame-cef"}
+
+
+def need(*tools):
+    missing = [t for t in tools if not shutil.which(t)]
+    if missing:
+        sys.exit("frame-ctl: missing " + ", ".join(f"{t} ({DEPS.get(t, '')})" for t in missing))
+
+
+def window(name):
+    r = sh(f"xdotool search --name '^{name}$' | head -1")
+    return r.stdout.strip()
+
+
+def focus(name=None):
+    need("xdotool")
+    name = name or GAME_WIN
+    if not name:
+        sys.exit("frame-ctl: which window? pass one or set FRAMECTL_SHOT_WINDOW to the game's desktop window title")
+    w = window(name)
+    if not w:
+        sys.exit(f"frame-ctl: no window named {name}")
+    for _ in range(5):  # KDE Wayland sometimes ignores the first activation
+        sh(f"xdotool windowactivate --sync {w}")
+        time.sleep(0.3)
+        if sh("xdotool getactivewindow").stdout.strip() == w:
+            timeline(f"focus {name}", "ok"); return
+    sys.exit(f"frame-ctl: could not activate window {name}")
+
+
+def shot(out=None, name=None):
+    need("xdotool", "spectacle")
+    name = name or GAME_WIN or "vrview"
+    out = out or os.path.join(run_dir() or "/tmp", f"shot-{time.strftime('%H%M%S')}.png")
+    prev = sh("xdotool getactivewindow").stdout.strip()
+    if name == "vrview":
+        w = window("VR View")
+        if not w:
+            sys.exit("frame-ctl: VR View window not open (steamvr.showMirrorView, see README)")
+        sh(f"xdotool windowsize {w} 2400 1500")
+        focus("VR View")
+    else:
+        focus(name)
+    time.sleep(1)
+    sh(f"spectacle -b -n -a -o '{out}'", timeout=30)
+    if prev:  # games ignore controller input while their desktop window is unfocused, so hand focus back
+        sh(f"xdotool windowactivate --sync {prev}")
+    timeline(f"shot {name}", out)
+    print(out)
+
+
+def worn(on):
+    ok(send("set hmd /proximity 1" if on else "rel hmd /proximity"))
+    r = sh(f"ssh -o ConnectTimeout=5 {HOST} '{AWAKE} {'on' if on else 'off'}'", timeout=120)
+    print("frame agent-awake:", (r.stdout + r.stderr).strip()[-200:])
+
+
+def wake():
+    sh(f"{VRCMD} --handlewakeup", timeout=15)
+    r = sh(f"ssh -o ConnectTimeout=5 {HOST} '/opt/steamvr/bin/linuxarm64/vrcmd --handlewakeup'", timeout=20)
+    timeline("wake", str(r.returncode))
+    print("ok")
+
+
+# The Frame's Steam client re-opens its dashboard ("ShowOverlay#1 valve.steam.gamepadui.main" over the websocket to
+# its SteamVR) right after every hide while nobody uses it, and vrlink mirrors that to the PC, where the dashboard
+# then owns all input (IsInputAvailable=0). `dash hide` drops that one message in the Frame's Steam JS and hides.
+# The patch lives in the Frame's SharedJSContext, so it is gone after Steam restarts on the Frame (re-run dash hide).
+DASH_JS = """(()=>{if(!window.__fcDrop){window.__fcDrop=1;const o=WebSocket.prototype.send;WebSocket.prototype.send=function(d){
+try{if(window.__noShowMain&&typeof d!="string"){const s=new TextDecoder("latin1").decode(d instanceof ArrayBuffer?new Uint8Array(d):d);
+if(s.includes("ShowOverlay#1")&&s.includes("valve.steam.gamepadui.main")){(window.__fcDropped=window.__fcDropped||[]).push(Date.now());return}}}
+catch(e){}return o.call(this,d)}};window.__noShowMain=%s;return "ok"})()"""
+
+
+def cef(js, page=None):
+    need("uv", "ssh")
+    r = sh(f"{HERE}/frame-cef {page + ' ' if page else ''}{json.dumps(js)}", timeout=30)
+    if r.returncode:
+        sys.exit("frame-ctl: frame-cef failed: " + r.stderr.strip()[-300:])
+    return r.stdout.strip()
+
+
+def dash(sub):
+    if sub == "hide":
+        cef(DASH_JS % "true", "SharedJSContext")
+        cef("SteamClient.OpenVR.VROverlay.HideDashboard()")
+        sh(f"{VRCMD} --hidedashboard", timeout=15)
+        time.sleep(2)
+    elif sub == "allow":
+        cef(DASH_JS % "false", "SharedJSContext")
+    vis = cef("SteamClient.OpenVR.VROverlay.IsDashboardVisible()")
+    timeline(f"dash {sub}", f"frame_dashboard_visible={vis}")
+    print(f"frame dashboard visible: {vis}")
+
+
+def driver_up():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(1)
+    try:
+        s.sendto(b"ping", ("127.0.0.1", PORT)); return s.recv(100).startswith(b"ok")
+    except OSError:
+        return False
+
+
+def stats():
+    return sh(f"{VRCMD} --stats", timeout=15).stdout
+
+
+def vr_restart():
+    for n in ("vrserver", "vrmonitor"):
+        sh(f"pkill -x {n}")
+    for _ in range(60):
+        if sh("pgrep -x vrserver").returncode: break
+        time.sleep(1)
+    sh("steam steam://run/250820 >/dev/null 2>&1 &")
+    t = time.time()
+    while time.time() - t < 240:
+        time.sleep(5)
+        if driver_up() and '"activity_level" : 1' in stats(): break
+    else:
+        sys.exit(f"frame-ctl: SteamVR/Frame stream not up after 240 s (headset awake? `ssh {HOST} {AWAKE} on`)")
+    time.sleep(15)  # SteamVR must settle before a game launch
+    ok(send("nodash on")); ok(send("spawn"))
+    try:
+        dash("hide")
+    except SystemExit as e:
+        print(f"warning: dash hide failed ({e}); games may not get input until it works")
+    timeline("vr-restart", "ok")
+
+
+def launch(gameid, win=None):
+    win = win or GAME_WIN
+    sh(f"steam steam://rungameid/{gameid} >/dev/null 2>&1 &")
+    timeline(f"launch {gameid}", "")
+    t = time.time()
+    while time.time() - t < 300:
+        time.sleep(5)
+        if (not win or window(win)) and re.search(r'"average_application_gpu_time_ms" : [1-9]', stats()): break
+    else:
+        sys.exit("frame-ctl: no game frames after 300 s")
+    time.sleep(10)
+    dash("hide")
+    print("ok", round(time.time() - t), "s")
+
+
+def last_bindings():
+    """{app_key: [binding files]} from vrserver.txt, in load order (one per controller type)."""
+    out = {}
+    for line in open(os.path.expanduser("~/.local/share/Steam/logs/vrserver.txt"), errors="replace"):
+        m = re.search(r"Successfully loaded binding file '([^']+)' for app '([^']+)'", line)
+        if m:
+            files = out.setdefault(m.group(2), [])
+            if m.group(1) in files: files.remove(m.group(1))
+            files.append(m.group(1))
+    return out
+
+
+def bindings(app=None):
+    b = last_bindings()
+    skip = ("system.", "openvr.component", "steam.client", "vrlink.client")
+    apps = [k for k in b if (app and app in k) or (not app and not k.startswith(skip))]
+    if not apps:
+        sys.exit("frame-ctl: no matching binding load in vrserver.txt. Apps seen: " + ", ".join(b))
+    key = apps[-1]
+    print(f"app {key}")
+    for path in sorted(b[key], key=lambda f: "hmd" in f):  # controllers first
+        print(f"\nfile {path}")
+        try:
+            d = json.load(open(path))
+        except (OSError, ValueError) as e:
+            print(f"  (can't read: {e})"); continue
+        print("controller_type", d.get("controller_type", "?"))
+        for aset, v in d.get("bindings", {}).items():
+            rows = []
+            for src in v.get("sources", []):
+                for slot, o in src.get("inputs", {}).items():
+                    rows.append(f"  {src['path']:<40} {src.get('mode', ''):<12} {slot:<10} -> {o.get('output', '')}")
+            for k in ("poses", "haptics", "skeleton"):
+                for o in v.get(k, []):
+                    rows.append(f"  {o.get('path', ''):<40} {k:<12} {'':<10} -> {o.get('output', '')}")
+            if rows:
+                print(f"[{aset}]"); print("\n".join(sorted(rows)))
+
+
+def watch():
+    log = os.path.join(STATE, "driver.log")
+    print(f"watching {log} (real = physical headset/controller input; Ctrl-C to stop)")
+    os.execvp("sh", ["sh", "-c", f"tail -n0 -F '{log}' | grep --line-buffered -E ' (real|haptic|set|rel|pose|clear) '"])
+
+
+def doctor():
+    def chk(ok_, what, hint=""):
+        print(("ok   " if ok_ else "FAIL ") + what + ("" if ok_ else f"  -> {hint}"))
+        return ok_
+    for t, why in DEPS.items():
+        chk(shutil.which(t), f"{t} installed ({why})", "install it")
+    chk(shutil.which("magick"), "magick installed (image checks in README examples)", "install imagemagick")
+    chk(os.path.exists(VRCMD), f"SteamVR at {SV}", "set STEAMVR=<SteamVR dir>")
+    up = chk(driver_up(), "driver_framectl answering on UDP 47823", "./build.sh install, then frame-ctl vr-restart")
+    if up:
+        lines = [l for l in open(os.path.join(STATE, "driver.log"), errors="replace") if "SteamVR build" in l]
+        chk(lines and "enabled" in lines[-1], "dashboard hooks enabled for this SteamVR build",
+            "unknown SteamVR build: dash hide still works, driver-side nodash/dash close are off")
+        chk("left\t/input/a/click" in send("list"), "virtual controllers spawned", "frame-ctl spawn")
+    chk(bool(window("VR View")), "VR View window open (headset capture)", "probe/vrprobe setbool steamvr showMirrorView 1, restart SteamVR")
+    st = stats()
+    chk('"activity_level" : 1' in st, "headset active (activity_level 1)", f"frame-ctl wake / worn on")
+    r = sh(f"ssh -o ConnectTimeout=5 -o BatchMode=yes {HOST} 'test -x {AWAKE} && echo y'", timeout=20)
+    chk(r.stdout.strip() == "y", f"ssh {HOST} works and {AWAKE} exists", "frame/install.sh")
+    r = sh(f"{HERE}/frame-cef 'SteamClient.OpenVR.VROverlay.IsDashboardVisible()'", timeout=30)
+    if chk(r.returncode == 0, "Steam CEF on the headset reachable over ssh tunnel", "SteamOS developer mode -> CEF remote debugging"):
+        chk(r.stdout.strip() == "false", "headset dashboard closed", "frame-ctl dash hide")
+    p = os.path.join(HERE, "probe", "vrprobe")
+    if os.path.exists(p):
+        o = sh(p, timeout=20).stdout.splitlines()
+        chk(o and "input_available=1" in o[0], "PC SteamVR gives apps input (no dashboard capture)", "frame-ctl dash hide")
+
+
+def status():
+    print(send("ping").strip())
+    print("--- components (dev, path, type, real value, override)"); print(send("list").rstrip())
+    print("--- poses"); print(send("poses").rstrip())
+    st = sh(f"{VRCMD} --stats", timeout=15).stdout
+    al = [l.strip() for l in st.splitlines() if "activity_level" in l]
+    print("--- PC", al[0] if al else "vrcmd --stats: no activity_level")
+    r = sh(f"ssh -o ConnectTimeout=5 {HOST} '{AWAKE} status'", timeout=20)
+    print("--- Frame agent-awake:", " ".join((r.stdout or r.stderr).split()))
+
+
+def run_cmd(args):
+    sub = args[0] if args else ""
+    if sub == "start":
+        cur = run_dir()
+        if cur:  # one headset, one driver: two agents' runs would interleave inputs and logs
+            try:
+                os.kill(int(open(os.path.join(cur, ".collector.pid")).read()), 0)
+                sys.exit(f"frame-ctl: run {cur} is active (another agent?). Stop it or wait; the headset is shared.")
+            except (OSError, ValueError):
+                pass  # stale pointer, collector gone
+        label = "-".join(args[1:]) or "run"
+        d = os.path.expanduser(f"~/frame-ctl-runs/{time.strftime('%Y%m%d-%H%M%S')}-{label}")
+        os.makedirs(d)
+        os.makedirs(STATE, exist_ok=True)
+        open(RUNPTR, "w").write(d)
+        subprocess.Popen([os.path.join(HERE, "frame-ctl-logs"), "start", d], start_new_session=True,
+                         stdout=open(os.path.join(d, "collector.log"), "a"), stderr=subprocess.STDOUT)
+        timeline("run start", label)
+        print(d)
+    elif sub == "stop":
+        d = run_dir()
+        if not d:
+            sys.exit("frame-ctl: no active run")
+        timeline("run stop", "")
+        subprocess.run([os.path.join(HERE, "frame-ctl-logs"), "stop", d])
+        os.remove(RUNPTR)
+        print(d)
+    elif sub == "note":
+        timeline("note", " ".join(args[1:]))
+    else:
+        sys.exit("usage: frame-ctl run start <label> | stop | note <text>")
+
+
+def main(a):
+    if not a or a[0] in ("-h", "--help", "help"):
+        print(__doc__); return
+    c, r = a[0], a[1:]
+    if c == "status": status()
+    elif c in ("spawn", "despawn", "clear"): ok(send(c))
+    elif c == "press":
+        setb(r[0], r[1], 1); time.sleep(float(r[2]) if len(r) > 2 else 0.15); rel(r[0], r[1])
+    elif c == "hold": setb(r[0], r[1], 1)
+    elif c == "release": rel(r[0], r[1])
+    elif c in ANALOG:
+        if r[1] == "off": rel(r[0], c)
+        else:
+            v = float(r[1])
+            ok(send(f"set {r[0]} /input/{c}/value {v}"))
+            ok(send(f"set {r[0]} /input/{c}/touch {1 if v > 0 else 0}"))
+            ok(send(f"set {r[0]} /input/{c}/click {1 if v >= 0.9 else 0}"))
+    elif c == "stick":
+        if r[1] == "off":
+            for k in ("x", "y", "touch"): ok(send(f"rel {r[0]} /input/thumbstick/{k}"))
+        else:
+            ok(send(f"set {r[0]} /input/thumbstick/touch 1"))
+            ok(send(f"set {r[0]} /input/thumbstick/x {r[1]}")); ok(send(f"set {r[0]} /input/thumbstick/y {r[2]}"))
+            if len(r) > 3:
+                time.sleep(float(r[3]))
+                for k in ("x", "y", "touch"): ok(send(f"rel {r[0]} /input/thumbstick/{k}"))
+    elif c == "pose": ok(send("pose " + " ".join(r)))
+    elif c == "worn": worn(r[0] == "on")
+    elif c == "wake": wake()
+    elif c == "dash": dash(r[0] if r else "status")
+    elif c == "vr-restart": vr_restart()
+    elif c == "launch": launch(r[0], r[1] if len(r) > 1 else None)
+    elif c == "shot": shot(r[0] if r else None, r[1] if len(r) > 1 else None)
+    elif c == "focus": focus(r[0] if r else None)
+    elif c == "run": run_cmd(r)
+    elif c == "bindings": bindings(r[0] if r else None)
+    elif c == "watch": watch()
+    elif c == "doctor": doctor()
+    elif c == "raw": print(send(" ".join(r)).rstrip())
+    else: sys.exit(f"frame-ctl: unknown command {c}\n{__doc__}")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
