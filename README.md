@@ -94,6 +94,12 @@ window title for `focus`/`shot`; default captures the headset view), `FRAMECTL_F
 tunnel), `FRAMECTL_LOG_INTERVAL` (seconds between run screenshots, default 60), `FRAMECTL_GAME_LOG_DIRS`,
 `STEAMVR` (SteamVR dir).
 
+## Using it with an AI agent
+
+Give your agent `skills/frame-ctl/SKILL.md` (Claude Code: `ln -s "$PWD/skills/frame-ctl" ~/.claude/skills/`);
+`AGENTS.md` covers other agents and people working on the code. The skill tells the agent to check `doctor`
+first, never take over a headset someone else is using, and finish with `frame-ctl cleanup`.
+
 ## Typical test
 
 ```bash
@@ -105,12 +111,13 @@ frame-ctl press right trigger             # menus usually confirm on the trigger
 frame-ctl stick left 0 1 2                # walk forward 2 s
 frame-ctl shot "" vrview                  # what the headset shows
 frame-ctl run stop                        # collect logs
+frame-ctl cleanup                         # quit game + SteamVR, clear overrides, let the headset sleep
 ```
 
 Commands: `press|hold|release <hand> <btn>`, `trigger|grip <hand> <0..1|off>`, `stick <hand> <x> <y> [secs]|off`,
 `pose <hmd|left|right> off|hold|level <yaw> [height]|world x y z [q]|head dx dy dz [q]|x y z [q]` (q =
 `qw qx qy qz`), `worn on|off`, `wake`, `dash hide|allow|status`, `shot [file] [window|vrview]`, `focus [window]`,
-`spawn|despawn`, `clear`, `bindings [app]`, `watch`, `doctor`, `status`, `run start|stop|note`, `raw <line>`.
+`spawn|despawn`, `clear`, `bindings [app]`, `watch`, `doctor`, `cleanup [--keep-vr] [--keep-awake]`, `status`, `run start|stop|note`, `raw <line>`.
 
 Driver protocol (UDP, one line in, text out): `ping`, `list`, `poses`, `set <dev> <component> <value>`,
 `rel <dev|all> <component|all>`, `pose ...`, `spawn`, `despawn`, `nodash on|off`, `dash close`, `clear`.

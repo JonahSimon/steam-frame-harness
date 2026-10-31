@@ -18,6 +18,8 @@
   launch <rungameid> [window]    Steam-launch a game, wait for its frames, then `dash hide`
   bindings [app-key]             what each Frame input does in the app's loaded SteamVR binding (default: latest app)
   watch                          live log of real headset button changes, injected input and game haptics
+  cleanup [--keep-vr] [--keep-awake]  hand the setup back: stop run, quit games, clear overrides, despawn,
+                                 let the headset dashboard work again, let the headset sleep, quit SteamVR
   doctor                         check tools, driver, SteamVR build, VR View, headset ssh, CEF tunnel, input focus
   raw    <driver command>        send a protocol line as-is
 hand = left|right|all. btn = a b x y menu view system bumper trigger grip thumbstick thumbrest dpad_up/down/left/right.
@@ -284,6 +286,71 @@ def watch():
     os.execvp("sh", ["sh", "-c", f"tail -n0 -F '{log}' | grep --line-buffered -E ' (real|haptic|set|rel|pose|clear) '"])
 
 
+def steam_game_pids():
+    """{pid: SteamGameId} for every process Steam launched as a game (Proton or native), skipping SteamVR (250820)."""
+    out = {}
+    for d in glob.glob("/proc/[0-9]*"):
+        try:
+            env = open(d + "/environ", "rb").read().split(b"\0")
+        except OSError:
+            continue
+        gid = next((e[12:].decode() for e in env if e.startswith(b"SteamGameId=")), None)
+        if gid and gid not in ("0", "250820") and int(d[6:]) != os.getpid():
+            out[int(d[6:])] = gid
+    return out
+
+
+def kill_games():
+    pids = steam_game_pids()
+    if not pids:
+        print("games: none running"); return
+    ids = sorted(set(pids.values()))
+    for pid in pids:
+        try: os.kill(pid, 15)
+        except OSError: pass
+    for _ in range(20):
+        time.sleep(0.5)
+        if not any(os.path.exists(f"/proc/{p}") for p in pids): break
+    for pid in pids:
+        try: os.kill(pid, 9)
+        except OSError: pass
+    timeline("cleanup kill games", ",".join(ids))
+    print("games: stopped", ", ".join(ids), f"({len(pids)} processes)")
+
+
+def cleanup(keep_vr=False, keep_awake=False):
+    """Leave the PC and headset the way a human expects to find them."""
+    steps = []
+    def step(name, fn):
+        try:
+            fn(); steps.append(f"ok   {name}")
+        except (SystemExit, Exception) as e:
+            steps.append(f"FAIL {name}: {e}")
+    if run_dir():
+        step("stop run", lambda: run_cmd(["stop"]))
+    step("quit games", kill_games)
+    if driver_up():
+        step("clear overrides", lambda: ok(send("clear")))
+        step("despawn virtual controllers", lambda: ok(send("despawn")))
+        step("driver nodash off", lambda: ok(send("nodash off")))
+    step("headset dashboard allowed", lambda: dash("allow"))
+    if not keep_awake:
+        step("headset may sleep (agent-awake off)",
+             lambda: print(sh(f"ssh -o ConnectTimeout=5 {HOST} '{AWAKE} off'", timeout=120).stdout.strip()))
+    if not keep_vr:
+        def quit_vr():
+            for n in ("vrmonitor", "vrserver"):
+                sh(f"pkill -x {n}")
+            for _ in range(30):
+                if sh("pgrep -x vrserver").returncode: return
+                time.sleep(1)
+            raise RuntimeError("vrserver still running")
+        step("quit SteamVR", quit_vr)
+    print("\n".join(["--- cleanup"] + steps))
+    if any(x.startswith("FAIL") for x in steps):
+        sys.exit(1)
+
+
 def doctor():
     def chk(ok_, what, hint=""):
         print(("ok   " if ok_ else "FAIL ") + what + ("" if ok_ else f"  -> {hint}"))
@@ -394,6 +461,7 @@ def main(a):
     elif c == "bindings": bindings(r[0] if r else None)
     elif c == "watch": watch()
     elif c == "doctor": doctor()
+    elif c == "cleanup": cleanup("--keep-vr" in r, "--keep-awake" in r)
     elif c == "raw": print(send(" ".join(r)).rstrip())
     else: sys.exit(f"frame-ctl: unknown command {c}\n{__doc__}")
 

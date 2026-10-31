@@ -1,29 +1,42 @@
 ---
 name: frame-ctl
-description: Drive a Steam Frame VR headset and its controllers with nobody wearing it, to test PC VR games end to end (press buttons, move sticks, pose HMD/controllers, screenshot the headset view, collect per-run logs). Use when asked to test, smoke-test, reproduce a bug in, or navigate a SteamVR game on the Frame.
+description: Drive a Steam Frame VR headset and its controllers with nobody wearing it, to test PC VR games end to end (press buttons, move sticks, pose HMD/controllers, screenshot the headset view, read a game's button bindings, collect per-run logs). Use when asked to test, smoke-test, reproduce a bug in, or navigate a SteamVR game on the Frame.
 ---
 
 # frame-ctl
 
-Read `README.md` in the repo once. The loop:
+The repo README has the details. This is the loop.
 
-1. `frame-ctl doctor`. Every line should say `ok`; each FAIL names its fix. If the driver is missing, run
-   `frame-ctl vr-restart`. If the stream won't come up, wake the headset (`frame-ctl wake`, `frame-ctl worn on`).
-   If `run start` refuses, another agent owns the headset: stop and report, don't take it over.
-2. `frame-ctl run start <label>` before anything you want to keep. Everything after it lands in one folder.
-3. `frame-ctl launch <steam rungameid>`. It waits for game frames and runs `dash hide`. If inputs do nothing, the
-   first suspect is the dashboard: `probe/vrprobe | head -1` must show `dashboard_visible=0 input_available=1`.
-   If not, run `frame-ctl dash hide` again.
-4. Before pressing anything, run `frame-ctl bindings <app>` to see what each Frame input does in this game.
-   Act, then look: `frame-ctl press right trigger`, `frame-ctl stick left 0 1 2`, then
-   `frame-ctl shot "" vrview` (headset view) and read the PNG. Level the head first with
-   `frame-ctl pose hmd level 0`. Turn to look around with `pose hmd level <deg>`.
-5. Before blaming the harness, check what the game received. Its logs (e.g. FO4VR
-   `F4SE/VR Controls Config.log` raw controller state, `PipboyTabsVR.log` menu opens) tell "input missing" apart
-   from "game state ignores it" (cutscene, menu, scripted lock).
-   `frame-ctl watch` in a second shell shows every injected input and every haptic pulse the game sends back.
-6. `frame-ctl run stop`, then cite the run folder in your report.
+## Before you start
 
-Rules: keep the game's desktop window focused (`frame-ctl focus`) when injecting input. Don't edit SteamVR
-settings or Steam vdfs while they run. Leave `frame-ctl clear` and `frame-ctl dash allow` set when you hand the
-headset back to a human.
+1. `frame-ctl doctor`. Every line should say `ok`; each FAIL names its fix. If the driver isn't answering, run
+   `frame-ctl vr-restart` (starts SteamVR, waits for the headset stream, spawns the virtual controllers, hides
+   the headset dashboard). If the stream won't come up, wake the headset (`frame-ctl wake`, `frame-ctl worn on`).
+2. **One agent per headset.** If `frame-ctl run start` refuses, or `doctor`/`status` shows someone else's run or
+   game, stop and report. Don't take the headset over: a `vr-restart` kills the other agent's game.
+
+## Test
+
+3. `frame-ctl run start <label>`. Everything until `run stop` lands in one folder.
+4. `frame-ctl launch <steam app id or rungameid>`. It waits for game frames and runs `dash hide`. If inputs do
+   nothing, the first suspect is the headset dashboard: `probe/vrprobe | head -1` must show
+   `dashboard_visible=0 input_available=1`; if not, `frame-ctl dash hide`.
+5. `frame-ctl bindings <app>` shows what every Frame input does in this game. Read it before pressing things.
+6. Act, then look: `frame-ctl pose hmd level 0` (upright head), `frame-ctl press right trigger`,
+   `frame-ctl stick left 0 1 2`, then `frame-ctl shot "" vrview` (the headset view) and read the image.
+   Turn the head with `pose hmd level <deg>`. `frame-ctl watch` in another shell shows every injected input and
+   every haptic pulse the game sends back.
+7. Before blaming the harness, check what the game received. Game logs (script-extender plugins, the game's own
+   log) tell "input missing" apart from "the game ignores it right now" (cutscene, menu, scripted lock).
+8. `frame-ctl run stop`, and cite the run folder in your report.
+
+## Clean up (always, even when the test failed)
+
+9. `frame-ctl cleanup`. It stops your run, quits the game, clears every override, removes the virtual
+   controllers, lets the headset's dashboard work again, lets the headset sleep, and quits SteamVR. Check that
+   every line says `ok`. Use `--keep-vr` / `--keep-awake` only if the person asked you to leave it running for
+   them. Never end a session with a game, SteamVR or the keep-awake override still running.
+
+Rules: keep the game's desktop window focused (`frame-ctl focus <window>`) while injecting input. Don't edit
+SteamVR settings or Steam vdfs while they run. Don't run heavy parallel work next to a big modded game: the PC
+can run out of memory and the OOM killer may take your process.
