@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""frame-compat [--all] [appid ...]: how well each installed VR game supports Steam Frame controllers, without
+launching anything. Classes, best first:
+
+  native      game ships a frame_controller binding, or SteamVR ships one for it
+  convertible SteamVR Input game with an Index (knuckles) binding but none for the Frame: SteamVR will fall back
+              to its Touch binding; `tools/frame-binding` makes a native one (per-finger input, Index layout)
+  touch-only  SteamVR Input game without Index or Frame bindings: SteamVR converts Touch/Vive (usually playable)
+  legacy      old OpenVR input (no action manifest): SteamVR's legacy Frame binding applies
+  openxr      OpenXR game: works if it lists the Frame interaction profile, else the runtime emulates Touch/Index
+  not-vr      no VR runtime found (skipped unless --all)
+"""
+import glob, json, os, re, sys
+
+STEAM = os.path.expanduser("~/.local/share/Steam")
+SV = os.environ.get("STEAMVR", f"{STEAM}/steamapps/common/SteamVR")
+FRAME_PROFILE = b"/interaction_profiles/valve/frame_controller"
+
+
+def libraries():
+    txt = open(f"{STEAM}/steamapps/libraryfolders.vdf").read()
+    return [p for p in re.findall(r'"path"\s+"([^"]+)"', txt) if os.path.isdir(f"{p}/steamapps")]
+
+
+def apps():
+    for lib in libraries():
+        for m in glob.glob(f"{lib}/steamapps/appmanifest_*.acf"):
+            t = open(m, errors="replace").read()
+            g = lambda k: (re.search(rf'"{k}"\s+"([^"]*)"', t) or [None, ""])[1]
+            yield g("appid"), g("name"), f"{lib}/steamapps/common/{g('installdir')}"
+
+
+def walk(root, depth=5):
+    base = root.count(os.sep)
+    for d, dirs, files in os.walk(root):
+        if d.count(os.sep) - base >= depth:
+            dirs[:] = []
+        for f in files:
+            yield os.path.join(d, f)
+
+
+def manifests(files):
+    for f in files:
+        if f.endswith(".json") and os.path.getsize(f) < 2_000_000:
+            try:
+                d = json.load(open(f, errors="replace"))
+            except (ValueError, OSError):
+                continue
+            if isinstance(d, dict) and "default_bindings" in d and "actions" in d:
+                yield f, d
+
+
+def has_profile(files):
+    """True if a game binary/data file names the Frame OpenXR interaction profile."""
+    for f in files:
+        if re.search(r"\.(dll|exe|so|pak|assets|bundle|dat)$|global-metadata", f, re.I):
+            try:
+                if os.path.getsize(f) > 1_500_000_000:
+                    continue
+                with open(f, "rb") as h:
+                    prev = b""
+                    while chunk := h.read(1 << 24):
+                        if FRAME_PROFILE in prev[-64:] + chunk or FRAME_PROFILE.decode("ascii").encode("utf-16-le") in chunk:
+                            return True
+                        prev = chunk
+            except OSError:
+                pass
+    return False
+
+
+def classify(appid, path, valve_bound):
+    if not os.path.isdir(path):
+        return "missing", ""
+    files = list(walk(path))
+    names = {os.path.basename(f).lower() for f in files}
+    found = list(manifests(files))
+    for f, m in found:  # any manifest with a Frame binding wins (mods often add a second one)
+        if "frame_controller" in {b.get("controller_type") for b in m["default_bindings"]} or valve_bound:
+            return "native", os.path.relpath(f, path)
+    for f, m in found:
+        types = {b.get("controller_type") for b in m["default_bindings"]}
+        rel = os.path.relpath(f, path)
+        if "knuckles" in types:
+            kb = next(b["binding_url"] for b in m["default_bindings"] if b.get("controller_type") == "knuckles")
+            return "convertible", f"{rel}  ->  tools/frame-binding <dir>/{kb} --install <dir>/{os.path.basename(f)}"
+    for f, m in found:
+        types = {b.get("controller_type") for b in m["default_bindings"]}
+        return "touch-only", f"{os.path.relpath(f, path)}: {', '.join(sorted(t for t in types if t))}"
+    if valve_bound:
+        return "native", "SteamVR ships a Frame binding"
+    if any("openxr" in n for n in names) or any("unityopenxr" in f.lower() for f in files):
+        return ("native" if has_profile(files) else "openxr"), "OpenXR" + (" (Frame profile found)" if has_profile(files) else "")
+    if "openvr_api.dll" in names or "libopenvr_api.so" in names:
+        return "legacy", "OpenVR without action manifest"
+    return "not-vr", ""
+
+
+def main(a):
+    if a and a[0] in ("-h", "--help"):
+        sys.exit(__doc__)
+    prof = json.load(open(f"{SV}/drivers/frame_controller/resources/input/frame_controller_profile.json"))
+    valve = {b["app_key"].split(".")[-1] for b in prof.get("default_bindings", []) if b["app_key"].startswith("steam.app.")}
+    want = [x for x in a if x.isdigit()]
+    order = ["convertible", "touch-only", "openxr", "legacy", "native", "missing", "not-vr"]
+    rows = []
+    for appid, name, path in apps():
+        if (want and appid not in want) or appid in ("250820", "228980") or "Proton" in name or "Steam Linux Runtime" in name:
+            continue
+        c, note = classify(appid, path, appid in valve)
+        if c in ("not-vr", "missing") and "--all" not in a and not want:
+            continue
+        rows.append((order.index(c), c, appid, name, note))
+    for _, c, appid, name, note in sorted(rows):
+        print(f"{c:<12} {appid:>8}  {name[:34]:<34} {note}")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

@@ -59,6 +59,10 @@ frame-ctl bindings 823500                                                 # chec
 
 A Steam "verify files" or game update removes it; rerun the command.
 
+Find candidates across your whole library without launching anything: `tools/frame-compat` (about 20 s) sorts
+installed VR games into native / convertible / touch-only / legacy / openxr and prints the `frame-binding` command
+for each convertible one.
+
 ## How it works
 
 - **`driver_framectl`** (`driver/framectl.cpp`) is a SteamVR driver loaded next to vrlink. It patches the vtables
