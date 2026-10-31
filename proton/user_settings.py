@@ -3,6 +3,10 @@
 import os
 
 user_settings = {}
-run = os.path.expanduser("~/.local/state/frame-ctl/current-run")
-if os.path.exists(run):
+try:
+    run = open(os.path.expanduser("~/.local/state/frame-ctl/current-run")).read().strip()
+    pid = int(open(os.path.join(run, ".collector.pid")).read())
+    os.kill(pid, 0)  # a stale pointer from a crashed run must not turn on logging for normal play
     user_settings["PROTON_LOG"] = "1"
+except (OSError, ValueError):
+    pass

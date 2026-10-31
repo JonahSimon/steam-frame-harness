@@ -216,6 +216,26 @@ def stats():
     return sh(f"{VRCMD} --stats", timeout=15).stdout
 
 
+VRSETTINGS = os.path.expanduser("~/.local/share/Steam/config/steamvr.vrsettings")
+
+
+def set_mirror(on):
+    """VR View (headset mirror window) on for tests, off for normal play. Only edits the file while SteamVR is
+    stopped (vrserver rewrites it on exit); applies at the next SteamVR start."""
+    if not sh("pgrep -x vrserver").returncode:
+        return
+    try:
+        d = json.load(open(VRSETTINGS))
+    except (OSError, ValueError):
+        return
+    if d.setdefault("steamvr", {}).get("showMirrorView") == on:
+        return
+    if not os.path.exists(VRSETTINGS + ".bak-frame-ctl"):
+        shutil.copy2(VRSETTINGS, VRSETTINGS + ".bak-frame-ctl")
+    d["steamvr"]["showMirrorView"] = on
+    json.dump(d, open(VRSETTINGS, "w"), indent=3)
+
+
 def vr_restart():
     refuse_if_busy()
     os.makedirs(STATE, exist_ok=True)
@@ -225,6 +245,7 @@ def vr_restart():
     for _ in range(60):
         if sh("pgrep -x vrserver").returncode: break
         time.sleep(1)
+    set_mirror(True)
     sh("steam steam://run/250820 >/dev/null 2>&1 &")
     t = time.time()
     while time.time() - t < 240:
@@ -399,6 +420,7 @@ def cleanup(keep_vr=False, keep_awake=False):
                 time.sleep(1)
             raise RuntimeError("vrserver still running")
         step("quit SteamVR", quit_vr)
+        step("VR View off for normal play", lambda: set_mirror(False))
     print("\n".join(["--- cleanup"] + steps))
     if any(x.startswith("FAIL") for x in steps):
         sys.exit(1)
