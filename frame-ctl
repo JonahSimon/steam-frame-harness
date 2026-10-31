@@ -7,6 +7,7 @@
   hold   <hand> <btn>            press and keep held       release <hand> <btn|all>
   trigger|grip <hand> <0..1>     analog value (>=0.9 also clicks); `off` releases
   stick  <hand> <x> <y> [secs]   thumbstick deflection (-1..1); `off` releases; secs = hold then release
+  fingers <hand> <t> <i> <m> <r> <p> | off   finger curls 0..1 (default: derived from trigger, grip, touches)
   pose   <dev> <args...>         hmd|left|right: off | hold | x y z [qw qx qy qz] | head dx dy dz [q...]
   worn   on|off                  PC-side /proximity override + Frame agent-awake (prox fake)
   wake                           vrcmd --handlewakeup on PC and Frame
@@ -20,6 +21,8 @@
   watch                          live log of real headset button changes, injected input and game haptics
   cleanup [--keep-vr] [--keep-awake]  hand the setup back: stop run, quit games, clear overrides, despawn,
                                  let the headset dashboard work again, let the headset sleep, quit SteamVR
+  busy   [gameid]                exit 0 + reason if the headset is in use (another Steam game running, or a
+                                 vr-restart in progress); scripts call this before touching SteamVR
   doctor                         check tools, driver, SteamVR build, VR View, headset ssh, CEF tunnel, input focus
   raw    <driver command>        send a protocol line as-is
 hand = left|right|all. btn = a b x y menu view system bumper trigger grip thumbstick thumbrest dpad_up/down/left/right.
@@ -205,6 +208,9 @@ def stats():
 
 
 def vr_restart():
+    refuse_if_busy()
+    os.makedirs(STATE, exist_ok=True)
+    open(LOCK, "w").write(f"{os.getpid()} {time.time()}")
     for n in ("vrserver", "vrmonitor"):
         sh(f"pkill -x {n}")
     for _ in range(60):
@@ -224,9 +230,11 @@ def vr_restart():
     except SystemExit as e:
         print(f"warning: dash hide failed ({e}); games may not get input until it works")
     timeline("vr-restart", "ok")
+    os.remove(LOCK)
 
 
 def launch(gameid, win=None):
+    refuse_if_busy(gameid)
     win = win or GAME_WIN
     sh(f"steam steam://rungameid/{gameid} >/dev/null 2>&1 &")
     timeline(f"launch {gameid}", "")
@@ -298,6 +306,28 @@ def steam_game_pids():
         if gid and gid not in ("0", "250820") and int(d[6:]) != os.getpid():
             out[int(d[6:])] = gid
     return out
+
+
+LOCK = os.path.join(STATE, "vr-restart.lock")
+
+
+def busy_reason(own=None):
+    """Why the headset is in use by someone else, or None. `own` = the game id the caller is about to (re)launch."""
+    try:
+        pid = int(open(LOCK).read().split()[0])
+        if pid != os.getpid() and os.path.exists(f"/proc/{pid}"):
+            return f"vr-restart in progress (pid {pid})"
+    except (OSError, ValueError, IndexError):
+        pass
+    others = sorted({g for g in steam_game_pids().values() if g != own and not (own and g.startswith(own))})
+    return f"Steam game {', '.join(others)} is running" if others else None
+
+
+def refuse_if_busy(own=None):
+    r = busy_reason(own)
+    if r and not os.environ.get("FRAMECTL_FORCE"):
+        sys.exit(f"frame-ctl: headset busy: {r}. Another agent or person may be using it; stop and ask. "
+                 "(FRAMECTL_FORCE=1 overrides.)")
 
 
 def kill_games():
@@ -450,6 +480,7 @@ def main(a):
                 time.sleep(float(r[3]))
                 for k in ("x", "y", "touch"): ok(send(f"rel {r[0]} /input/thumbstick/{k}"))
     elif c == "pose": ok(send("pose " + " ".join(r)))
+    elif c == "fingers": ok(send("fingers " + " ".join(r)))
     elif c == "worn": worn(r[0] == "on")
     elif c == "wake": wake()
     elif c == "dash": dash(r[0] if r else "status")
@@ -461,6 +492,9 @@ def main(a):
     elif c == "bindings": bindings(r[0] if r else None)
     elif c == "watch": watch()
     elif c == "doctor": doctor()
+    elif c == "busy":
+        r = busy_reason(r[0] if r else None)
+        print(r or "free"); sys.exit(0 if r else 1)
     elif c == "cleanup": cleanup("--keep-vr" in r, "--keep-awake" in r)
     elif c == "raw": print(send(" ".join(r)).rstrip())
     else: sys.exit(f"frame-ctl: unknown command {c}\n{__doc__}")

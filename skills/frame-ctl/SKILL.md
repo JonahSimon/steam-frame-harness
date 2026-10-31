@@ -37,6 +37,8 @@ The repo README has the details. This is the loop.
    every line says `ok`. Use `--keep-vr` / `--keep-awake` only if the person asked you to leave it running for
    them. Never end a session with a game, SteamVR or the keep-awake override still running.
 
+Your own test scripts: call `frame-ctl busy <gameid>` before touching SteamVR and stop if it prints a reason.
+
 Rules: keep the game's desktop window focused (`frame-ctl focus <window>`) while injecting input. Don't edit
 SteamVR settings or Steam vdfs while they run. Don't run heavy parallel work next to a big modded game: the PC
 can run out of memory and the OOM killer may take your process.

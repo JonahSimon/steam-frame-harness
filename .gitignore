@@ -3,3 +3,4 @@
 probe/vrprobe
 third_party/
 goal/
+driver/hand_poses.h

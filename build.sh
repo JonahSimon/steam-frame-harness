@@ -10,6 +10,7 @@ mkdir -p $H driver/framectl/bin/linux64
 for f in openvr_driver.h openvr.h; do
   [ -f $H/$f ] || curl -fsSL -o $H/$f https://raw.githubusercontent.com/ValveSoftware/openvr/$OPENVR_TAG/headers/$f
 done
+python3 tools/bake-hand-poses.py "$SV" > driver/hand_poses.h  # SteamVR's own hand poses, not redistributed
 g++ -std=c++17 -O2 -shared -fPIC -fvisibility=hidden -Wall -I$H driver/framectl.cpp -o driver/framectl/bin/linux64/driver_framectl.so -lpthread
 g++ -O2 -I$H probe/vrprobe.cpp -o probe/vrprobe -L"$SV/bin/linux64" -lopenvr_api -Wl,-rpath,"$SV/bin/linux64"
 echo built

@@ -28,8 +28,12 @@ While spawned, real controllers report as disconnected to apps, so the hand role
 (`despawn` gives them back). You can also override inputs of the real headset and controllers directly
 (`raw set <dev> <component> <value>`).
 
-**Not emulated:** hand skeleton / finger curl (`/input/skeleton/*`), so apps that animate fingers from skeletal
-input show a default hand; eye tracking; battery state.
+- a finger skeleton (`/input/skeleton/left|right`), blended per finger between SteamVR's own open-hand and fist
+  reference poses (baked at build time from SteamVR's `hand_right_poses.glb`): index follows the trigger,
+  middle/ring/pinky the grip, the thumb any touched button. `frame-ctl fingers <hand> t i m r p` sets curls
+  directly; `fingers <hand> off` goes back to input-driven.
+
+**Not emulated:** eye tracking, battery state.
 
 Debugging button layouts:
 
@@ -38,6 +42,22 @@ Debugging button layouts:
 - `frame-ctl watch` streams real button changes from the physical headset/controllers, injected input and haptic
   pulses the game sends, so you can press a real button and see the component path.
 - `frame-ctl press <hand> <button>` then a screenshot shows what the game does with it.
+
+## Games without Frame bindings
+
+Many games ship bindings only for Index, Touch, Vive and WMR controllers. SteamVR then converts one for the Frame,
+preferring Oculus Touch, which can lose per-finger input and leave buttons in odd places (Boneworks: every finger
+follows the grip). `tools/frame-binding` converts the game's Index binding into a native Frame binding with
+SteamVR's own Index-to-Frame button table, maps finger curls to trigger and grip, and keeps the game in its Index
+hand mode:
+
+```bash
+G=~/.local/share/Steam/steamapps/common/BONEWORKS/BONEWORKS
+tools/frame-binding $G/knuckles_bindings.json --install $G/actions.json   # backs up actions.json
+frame-ctl bindings 823500                                                 # check what loaded
+```
+
+A Steam "verify files" or game update removes it; rerun the command.
 
 ## How it works
 
@@ -117,7 +137,7 @@ frame-ctl cleanup                         # quit game + SteamVR, clear overrides
 Commands: `press|hold|release <hand> <btn>`, `trigger|grip <hand> <0..1|off>`, `stick <hand> <x> <y> [secs]|off`,
 `pose <hmd|left|right> off|hold|level <yaw> [height]|world x y z [q]|head dx dy dz [q]|x y z [q]` (q =
 `qw qx qy qz`), `worn on|off`, `wake`, `dash hide|allow|status`, `shot [file] [window|vrview]`, `focus [window]`,
-`spawn|despawn`, `clear`, `bindings [app]`, `watch`, `doctor`, `cleanup [--keep-vr] [--keep-awake]`, `status`, `run start|stop|note`, `raw <line>`.
+`fingers <hand> t i m r p|off`, `spawn|despawn`, `clear`, `bindings [app]`, `busy [gameid]`, `watch`, `doctor`, `cleanup [--keep-vr] [--keep-awake]`, `status`, `run start|stop|note`, `raw <line>`.
 
 Driver protocol (UDP, one line in, text out): `ping`, `list`, `poses`, `set <dev> <component> <value>`,
 `rel <dev|all> <component|all>`, `pose ...`, `spawn`, `despawn`, `nodash on|off`, `dash close`, `clear`.
@@ -144,11 +164,12 @@ With SteamVR up and the headset streaming: `tests/driver.sh`, `tests/input.sh` (
 - Games lock movement in scripted scenes (e.g. Fallout 4's pre-war intro until character creation is finished).
   Check the game's own logs before blaming the harness.
 - Driver changes need a SteamVR restart, which ends the running game.
-- One agent at a time. Two agents on one headset kill each other's games.
+- One agent at a time. `vr-restart` and `launch` refuse while another Steam game is running or another
+  `vr-restart` is in progress (`frame-ctl busy`); your own scripts should call `frame-ctl busy <gameid>` first.
 
 ## Known limits (v0.1)
 
-Linux PC only, KDE for screenshots, SteamVR 2.18.4 tested, no skeletal input, no eye tracking, the dashboard fix
+Linux PC only, KDE for screenshots, SteamVR 2.18.4 tested, finger skeleton is a two-pose blend (no splay), no eye tracking, the dashboard fix
 depends on the headset's Steam JS and may break with a SteamOS update.
 
 ## Layout
