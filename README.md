@@ -169,6 +169,16 @@ With SteamVR up and the headset streaming: `tests/driver.sh`, `tests/input.sh` (
 - One agent at a time. `vr-restart` and `launch` refuse while another Steam game is running or another
   `vr-restart` is in progress (`frame-ctl busy`); your own scripts should call `frame-ctl busy <gameid>` first.
 
+## Game notes
+
+- **Fallout 4 VR with FRIK**: the Pip-Boy opens when you look at your left wrist (`PipBoyOpenWhenLookAt` in
+  `FRIK_Config/FRIK.ini`), not on a button. Working pose: `frame-ctl pose hmd level 0`, then the left hand at the
+  head position + (-0.03, -0.15, -0.32) m with `pose left world x y z 0.2706 0.6533 -0.2706 -0.6533`. FRIK.log
+  logs "Open Pipboy by looking at". Without FRIK, FO4VR's legacy binding puts the pause menu on left d-pad.
+- **Fallout 4 / Skyrim console** from the PC keyboard: type slowly (`xdotool type --delay 250`); faster typing
+  drops characters, and `xdotool key --window` events are ignored.
+- **Boneworks**: no Frame binding ships; use `tools/frame-binding` (see above).
+
 ## Known limits (v0.1)
 
 Linux PC only, KDE for screenshots, SteamVR 2.18.4 tested, finger skeleton is a two-pose blend (no splay), no eye tracking, the dashboard fix
