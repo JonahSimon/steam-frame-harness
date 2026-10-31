@@ -169,6 +169,8 @@ With SteamVR up and the headset streaming: `tests/driver.sh`, `tests/input.sh` (
   Check the game's own logs before blaming the harness.
 - Spawn the virtual controllers before starting a game: some games (Skyrim VR) only pick up controllers that
   exist at startup. `frame-ctl launch` and `vr-restart` handle this; `spawn` warns if a game is already running.
+- Don't `despawn` while a game runs: controllers disappearing and coming back crashed Fallout 4 VR (a mod read a
+  null pointer). `despawn` refuses unless `FRAMECTL_FORCE=1`.
 - Driver changes need a SteamVR restart, which ends the running game.
 - One agent at a time. `vr-restart` and `launch` refuse while another Steam game is running or another
   `vr-restart` is in progress (`frame-ctl busy`); your own scripts should call `frame-ctl busy <gameid>` first.
@@ -182,6 +184,23 @@ With SteamVR up and the headset streaming: `tests/driver.sh`, `tests/input.sh` (
 - **Fallout 4 / Skyrim console** from the PC keyboard: type slowly (`xdotool type --delay 250`); faster typing
   drops characters, and `xdotool key --window` events are ignored.
 - **Boneworks**: no Frame binding ships; use `tools/frame-binding` (see above).
+
+## Overhead
+
+Measured 2026-10-31 with `probe/vrprobe timing` (per-frame compositor GPU time), Fallout 4 VR (Gingas, HD
+profile), fixed head pose in one interior, RX 6900 XT, 40 to 60 s per condition:
+
+| Condition | median ms | mean ms | p95 ms |
+|---|---|---|---|
+| Baseline (driver loaded, virtual controllers, VR View open) | 5.90 | 8.13 | 14.9 |
+| Driver loaded, controllers despawned | 5.76 | 7.96 | 14.6 |
+| VR View closed | 5.71 | 8.19 | 15.1 |
+| Run logging (stats + JPEG every 20 s) and Proton logging | 5.96 | 8.20 | 15.1 |
+| Proton logging only | 5.92 | 8.11 | 14.8 |
+
+Every difference is within run-to-run noise (about 0.2 ms), and no condition dropped frames. The VR View mirror
+is the only consistent one, about 0.2 ms on the median, so `cleanup` closes it. Wine debug logging
+(`PROTON_LOG=1`) showed no cost in this game.
 
 ## Known limits (v0.1)
 
