@@ -152,9 +152,13 @@ def shot(out=None, name=None):
 
 
 def worn(on):
-    ok(send("set hmd /proximity 1" if on else "rel hmd /proximity"))
+    # headset side first: it must work before SteamVR (and so the driver) is up, e.g. right before vr-restart
     r = sh(f"ssh -o ConnectTimeout=5 {HOST} '{AWAKE} {'on' if on else 'off'}'", timeout=120)
-    print("frame agent-awake:", (r.stdout + r.stderr).strip()[-200:])
+    print("headset agent-awake:", (r.stdout + r.stderr).strip()[-200:])
+    if driver_up():
+        ok(send("set hmd /proximity 1" if on else "rel hmd /proximity"))
+    else:
+        print("PC SteamVR not running: proximity override skipped (run `worn on` again after vr-restart if needed)")
 
 
 def wake():
@@ -176,20 +180,25 @@ catch(e){}return o.call(this,d)}};window.__noShowMain=%s;return "ok"})()"""
 
 def cef(js, page=None):
     need("uv", "ssh")
-    r = sh(f"{HERE}/frame-cef {page + ' ' if page else ''}{json.dumps(js)}", timeout=30)
+    # argv list, not a shell string: multi-line JS must reach frame-cef byte for byte
+    r = subprocess.run([f"{HERE}/frame-cef"] + ([page] if page else []) + [js], text=True, capture_output=True, timeout=30)
     if r.returncode:
-        sys.exit("frame-ctl: frame-cef failed: " + r.stderr.strip()[-300:])
+        sys.exit("frame-ctl: frame-cef failed: " + (r.stderr or r.stdout).strip()[-300:])
     return r.stdout.strip()
 
 
 def dash(sub):
+    if sub in ("hide", "allow"):
+        cef(DASH_JS % ("true" if sub == "hide" else "false"), "SharedJSContext")
+        want = "true" if sub == "hide" else "false"
+        got = cef("String(window.__fcDrop === 1) + ',' + String(window.__noShowMain)", "SharedJSContext").strip('"')
+        if got != f"true,{want}":  # confound guard: never report success unless the hook is really in place
+            sys.exit(f"frame-ctl: dash {sub}: hook state on the headset is {got!r}, expected 'true,{want}'")
     if sub == "hide":
-        cef(DASH_JS % "true", "SharedJSContext")
         cef("SteamClient.OpenVR.VROverlay.HideDashboard()")
-        sh(f"{VRCMD} --hidedashboard", timeout=15)
+        if not sh("pgrep -x vrserver").returncode:  # vrcmd would start SteamVR otherwise
+            sh(f"{VRCMD} --hidedashboard", timeout=15)
         time.sleep(2)
-    elif sub == "allow":
-        cef(DASH_JS % "false", "SharedJSContext")
     vis = cef("SteamClient.OpenVR.VROverlay.IsDashboardVisible()")
     timeline(f"dash {sub}", f"frame_dashboard_visible={vis}")
     print(f"frame dashboard visible: {vis}")
@@ -233,8 +242,22 @@ def vr_restart():
     os.remove(LOCK)
 
 
+def spawned():
+    return driver_up() and "left\t/input/a/click" in send("list")
+
+
+def spawn():
+    ok(send("spawn"))
+    running = sorted(set(steam_game_pids().values()))
+    if running:  # games enumerate controllers at startup and ignore ones added later (seen with Skyrim VR)
+        print(f"warning: game {', '.join(running)} was already running; it may ignore the virtual controllers "
+              "until relaunched. Spawn before launching (frame-ctl launch does this).")
+
+
 def launch(gameid, win=None):
     refuse_if_busy(gameid)
+    if driver_up() and not spawned():
+        spawn(); time.sleep(2)
     win = win or GAME_WIN
     sh(f"steam steam://rungameid/{gameid} >/dev/null 2>&1 &")
     timeline(f"launch {gameid}", "")
@@ -458,7 +481,8 @@ def main(a):
         print(__doc__); return
     c, r = a[0], a[1:]
     if c == "status": status()
-    elif c in ("spawn", "despawn", "clear"): ok(send(c))
+    elif c == "spawn": spawn()
+    elif c in ("despawn", "clear"): ok(send(c))
     elif c == "press":
         setb(r[0], r[1], 1); time.sleep(float(r[2]) if len(r) > 2 else 0.15); rel(r[0], r[1])
     elif c == "hold": setb(r[0], r[1], 1)

@@ -162,8 +162,9 @@ static void qrot(const HmdQuaternion_t &q, const double v[3], double out[3]) {
 
 // Pose in the HMD's driver space at offset d (head frame, metres) and rotation q relative to the head. needs mu held
 static DriverPose_t headRelative(const double d[3], HmdQuaternion_t q) {
-  DriverPose_t p = poses[0].have ? poses[0].real : DriverPose_t{};
-  if (!poses[0].have) { p.qRotation = p.qWorldFromDriverRotation = p.qDriverFromHeadRotation = {1, 0, 0, 0}; }
+  // the head as apps see it: the override if one is active (e.g. `pose hmd level 0`), else the tracked pose
+  DriverPose_t p = poses[0].ov ? poses[0].ovp : poses[0].have ? poses[0].real : DriverPose_t{};
+  if (!poses[0].have && !poses[0].ov) { p.qRotation = p.qWorldFromDriverRotation = p.qDriverFromHeadRotation = {1, 0, 0, 0}; }
   double o[3]; qrot(p.qRotation, d, o);
   for (int k = 0; k < 3; k++) { p.vecPosition[k] += o[k]; p.vecDriverFromHeadTranslation[k] = 0; }
   p.qRotation = qmul(p.qRotation, q); p.qDriverFromHeadRotation = {1, 0, 0, 0};

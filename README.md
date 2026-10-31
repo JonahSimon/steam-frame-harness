@@ -31,7 +31,7 @@ While spawned, real controllers report as disconnected to apps, so the hand role
 - a finger skeleton (`/input/skeleton/left|right`), blended per finger between SteamVR's own open-hand and fist
   reference poses (baked at build time from SteamVR's `hand_right_poses.glb`): index follows the trigger,
   middle/ring/pinky the grip, the thumb any touched button. `frame-ctl fingers <hand> t i m r p` sets curls
-  directly; `fingers <hand> off` goes back to input-driven.
+  directly; `fingers <hand> off` goes back to input-driven. Verified in Boneworks (curls show on the hands).
 
 **Not emulated:** eye tracking, battery state.
 
@@ -163,6 +163,8 @@ With SteamVR up and the headset streaming: `tests/driver.sh`, `tests/input.sh` (
 - VR View is the headset view (overlays, menus). SteamVR's "Headset Mirror" captures black on this setup.
 - Games lock movement in scripted scenes (e.g. Fallout 4's pre-war intro until character creation is finished).
   Check the game's own logs before blaming the harness.
+- Spawn the virtual controllers before starting a game: some games (Skyrim VR) only pick up controllers that
+  exist at startup. `frame-ctl launch` and `vr-restart` handle this; `spawn` warns if a game is already running.
 - Driver changes need a SteamVR restart, which ends the running game.
 - One agent at a time. `vr-restart` and `launch` refuse while another Steam game is running or another
   `vr-restart` is in progress (`frame-ctl busy`); your own scripts should call `frame-ctl busy <gameid>` first.

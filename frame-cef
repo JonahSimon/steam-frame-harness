@@ -42,6 +42,9 @@ try:
         r = json.loads(ws.recv())
         if r.get("id") == 1: break
     res = r.get("result", {})
+    if "exceptionDetails" in res or "error" in r:  # JS threw or CDP refused: say so, exit non-zero
+        print(json.dumps(res.get("exceptionDetails") or r.get("error"), indent=1)[:4000], file=sys.stderr)
+        sys.exit(1)
     print(json.dumps(res.get("result", {}).get("value", res), indent=1)[:20000])
 finally:
     if tunnel: tunnel.terminate()
