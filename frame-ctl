@@ -504,7 +504,14 @@ def main(a):
     c, r = a[0], a[1:]
     if c == "status": status()
     elif c == "spawn": spawn()
-    elif c in ("despawn", "clear"): ok(send(c))
+    elif c == "despawn":
+        running = sorted(set(steam_game_pids().values()))
+        if running and not os.environ.get("FRAMECTL_FORCE"):
+            # controllers vanishing and coming back mid-game crashed Fallout 4 VR (Heisenberg mod, null read)
+            sys.exit(f"frame-ctl: game {', '.join(running)} is running; despawning controllers under it can crash it. "
+                     "Quit the game first (FRAMECTL_FORCE=1 overrides).")
+        ok(send(c))
+    elif c == "clear": ok(send(c))
     elif c == "press":
         setb(r[0], r[1], 1); time.sleep(float(r[2]) if len(r) > 2 else 0.15); rel(r[0], r[1])
     elif c == "hold": setb(r[0], r[1], 1)

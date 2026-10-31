@@ -3,14 +3,42 @@
 #include "openvr.h"
 #include <cstdio>
 #include <cstring>
+#include <algorithm>
+#include <vector>
 #include <cstdlib>
 #include <unistd.h>
 using namespace vr;
 int main(int argc, char **argv) {
   EVRInitError e;
-  EVRApplicationType type = argc < 2 || !strcmp(argv[1], "setbool") ? VRApplication_Background : !strcmp(argv[1], "scene") ? VRApplication_Scene : VRApplication_Overlay;
+  EVRApplicationType type = argc < 2 || !strcmp(argv[1], "setbool") || !strcmp(argv[1], "timing") ? VRApplication_Background : !strcmp(argv[1], "scene") ? VRApplication_Scene : VRApplication_Overlay;
   IVRSystem *s = VR_Init(&e, type);
   if (!s) { printf("init error %d\n", e); return 1; }
+  if (argc >= 2 && !strcmp(argv[1], "timing")) {  // vrprobe timing <secs>: per-frame compositor timings
+    double secs = argc > 2 ? atof(argv[2]) : 30;
+    std::vector<Compositor_FrameTiming> all; uint32_t last = 0;
+    for (int t = 0; t < secs * 4; t++) {
+      Compositor_FrameTiming ft[128]; ft[0].m_nSize = sizeof(Compositor_FrameTiming);
+      uint32_t n = VRCompositor()->GetFrameTimings(ft, 128);
+      for (uint32_t i = 0; i < n; i++) if (ft[i].m_nFrameIndex > last) { all.push_back(ft[i]); last = ft[i].m_nFrameIndex; }
+      usleep(250000);
+    }
+    auto stat = [&](const char *name, auto f) {
+      std::vector<float> v; for (auto &x : all) v.push_back(f(x));
+      std::sort(v.begin(), v.end());
+      double sum = 0; for (float x : v) sum += x;
+      if (v.empty()) { printf("%s n=0\n", name); return; }
+      printf("%-22s mean=%6.3f median=%6.3f p95=%6.3f\n", name, sum / v.size(), v[v.size() / 2], v[v.size() * 95 / 100]);
+    };
+    printf("frames=%zu\n", all.size());
+    stat("total_gpu_ms", [](const Compositor_FrameTiming &x) { return x.m_flTotalRenderGpuMs; });
+    stat("compositor_gpu_ms", [](const Compositor_FrameTiming &x) { return x.m_flCompositorRenderGpuMs; });
+    stat("compositor_cpu_ms", [](const Compositor_FrameTiming &x) { return x.m_flCompositorRenderCpuMs; });
+    stat("app_interval_ms", [](const Compositor_FrameTiming &x) { return x.m_flClientFrameIntervalMs; });
+    stat("app_submit_cpu_ms", [](const Compositor_FrameTiming &x) { return x.m_flSubmitFrameMs + x.m_flWaitGetPosesCalledMs; });
+    uint32_t dropped = 0, repro = 0; for (auto &x : all) { dropped += x.m_nNumDroppedFrames; repro += (x.m_nReprojectionFlags != 0); }
+    printf("dropped=%u reprojected_frames=%u\n", dropped, repro);
+    VR_Shutdown(); return 0;
+  }
   if (argc == 5 && !strcmp(argv[1], "setbool")) {  // vrprobe setbool <section> <key> 0|1
     EVRSettingsError se; VRSettings()->SetBool(argv[2], argv[3], atoi(argv[4]) != 0, &se);
     printf("setbool %s.%s=%s err=%d\n", argv[2], argv[3], argv[4], se); VR_Shutdown(); return se != VRSettingsError_None;
