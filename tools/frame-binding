@@ -8,7 +8,8 @@ separate Touch hand mode (e.g. Boneworks: all fingers follow the grip).
 
 - Button paths are remapped with SteamVR's own <from> -> frame_controller table (same as its auto-conversion).
 - Index-only inputs get Frame equivalents: finger/index <- trigger pull, finger/middle|ring|pinky <- grip pull,
-  grip force_sensor <- grip pull (trigger mode). Trackpad inputs are dropped (the Frame has none).
+  grip force_sensor <- grip pull (trigger mode), grip grab <- grip click. Trackpad inputs are dropped (the Frame
+  has none).
 - The result tells the game it is on the source controller (`options.simulated_controller_type`), so the game keeps
   its hand logic and models for that controller.
 - --install adds a frame_controller entry to the game's action manifest (backup: <file>.bak-frame-binding) and
@@ -62,6 +63,9 @@ def convert(binding, src_type):
                 new.append({"path": p, "mode": "trigger",
                             "inputs": {"pull": i for k, i in s["inputs"].items() if k == "force"}})
                 notes.append(f"{aset}: {p} force -> grip pull")
+            elif s["mode"] == "grab":  # Index grab mode keys off the force sensor; the Frame grip only has a value
+                new.append({"path": p, "mode": "trigger", "inputs": {"click": i for k, i in s["inputs"].items() if k == "grab"}})
+                notes.append(f"{aset}: {p} grab -> grip click")
             elif p in table:
                 for t in table[p]:
                     f = fit(s, t)
