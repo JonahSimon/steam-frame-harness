@@ -63,6 +63,28 @@ Find candidates across your whole library without launching anything: `tools/fra
 installed VR games into native / convertible / touch-only / legacy / openxr and prints the `frame-binding` command
 for each convertible one.
 
+## Flat (non-VR) games
+
+PC Steam turns the Frame controllers into one gamepad ("Steam Frame Controllers", then a uinput Xbox pad for the
+streamed game), fed from the controllers vrlink relays into PC SteamVR. Proven 2026-11-01 with Project Reclaimer
+(non-Steam shortcut): an injected A opened its Server Browser.
+
+- **Use headset-side virtual controllers** (`frame/install-driver.sh`, then `frame-ctl hs spawn`). vrlink relays
+  them to the PC as real controllers, so the pad works with nobody holding the real ones. Inject with `frame-ctl hs
+  press right a` (or PC-side `frame-ctl press`, which then overrides the relayed devices; a press needs touch + click).
+- **Never `frame-ctl spawn` on the PC for a flat game.** PC-spawned controllers don't feed the pad, and spawning them
+  destroys and recreates it; nothing reaches the game until `despawn`.
+- **The headset dock eats the input.** While the headset dashboard is open the pad gets nothing; launching a game
+  leaves it open. Close it (`frame-ctl hs press right system` toggles it).
+- Proven for a non-Steam shortcut (Proton), a Steam game under Proton and a Linux-native Steam game.
+- **Controllers with no hand role build no pad.** After the headset's VR stack restarts (`agent-awake on` does
+  that), the PC keeps the old relayed controllers with role 0 (`probe/vrprobe`); restart PC SteamVR.
+- **Launch from the headset**: `frame-ctl stream <appid>` (Steam or shortcut appid). A launch started on the PC
+  waits on a prompt that shows nowhere.
+- `tools/padwatch` logs every gamepad device and event on the PC; `tools/frame-ui-shot` screenshots the headset's
+  own Steam UI (VR View never shows it).
+- `frame-ctl cleanup` also clears and despawns the headset-side driver: its virtual controllers hide the real ones.
+
 ## How it works
 
 - **`driver_framectl`** (`driver/framectl.cpp`) is a SteamVR driver loaded next to vrlink. It patches the vtables

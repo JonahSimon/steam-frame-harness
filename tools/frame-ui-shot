@@ -1,0 +1,46 @@
+#!/usr/bin/env -S uv run --quiet --script
+# /// script
+# dependencies = ["websocket-client"]
+# ///
+"""frame-ui-shot <page-title (exact, else substring)> <out.png | --text> | --list : screenshot one of the headset Steam client's CEF pages
+(the dock/bar, main UI, popups, keyboard). These are the Frame's own overlays: they never appear in the PC's VR View.
+Uses the same ssh tunnel to the headset's CEF debug port as frame-cef."""
+import base64, json, os, socket, subprocess, sys, time, urllib.request
+import websocket
+
+args = sys.argv[1:]
+if not args or args[0] in ("-h", "--help"):
+    sys.exit(__doc__)
+s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
+tunnel = subprocess.Popen(["ssh", "-N", "-o", "ExitOnForwardFailure=yes", "-o", "ConnectTimeout=5",
+                           "-L", f"127.0.0.1:{port}:127.0.0.1:8080", os.environ.get("FRAMECTL_FRAME_HOST", "frame")])
+host = f"127.0.0.1:{port}"
+try:
+    for _ in range(50):
+        try:
+            socket.create_connection(("127.0.0.1", port), 0.2).close(); break
+        except OSError:
+            if tunnel.poll() is not None: sys.exit("frame-ui-shot: ssh tunnel failed")
+            time.sleep(0.2)
+    pages = [p for p in json.load(urllib.request.urlopen(f"http://{host}/json", timeout=10)) if p.get("webSocketDebuggerUrl")]
+    if args[0] == "--list":
+        for p in pages: print(p["title"])
+        sys.exit(0)
+    page = next((p for p in pages if p["title"] == args[0]), None) or next((p for p in pages if args[0] in p["title"]), None)
+    if not page: sys.exit(f"frame-ui-shot: no page titled *{args[0]}*; try --list")
+    ws = websocket.create_connection(page["webSocketDebuggerUrl"].replace("localhost:8080", host).replace("127.0.0.1:8080", host),
+                                     suppress_origin=True, timeout=40)
+    if args[1] == "--text":
+        ws.send(json.dumps({"id": 1, "method": "Runtime.evaluate", "params": {"expression": "document.body.innerText", "returnByValue": True}}))
+    else:
+        ws.send(json.dumps({"id": 1, "method": "Page.captureScreenshot", "params": {"format": "png"}}))
+    while True:
+        r = json.loads(ws.recv())
+        if r.get("id") == 1: break
+    if "error" in r: sys.exit(f"frame-ui-shot: {r['error']}")
+    if args[1] == "--text":
+        print(r["result"]["result"].get("value")); sys.exit(0)
+    open(args[1], "wb").write(base64.b64decode(r["result"]["data"]))
+    print(args[1])
+finally:
+    tunnel.terminate()

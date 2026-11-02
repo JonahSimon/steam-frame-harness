@@ -17,6 +17,10 @@
   run    start <label> | stop | note <text>   per-run log folder (see README)
   vr-restart                     restart PC SteamVR (reloads driver_framectl), wait until the Frame streams, spawn
   launch <rungameid> [window]    Steam-launch a game, wait for its frames, then `dash hide`
+  stream <appid>                 launch a PC game from the headset's Steam (flat games; skips PC-side prompts)
+  hs <cmd> [args]                send spawn|despawn|clear|press|hold|release|trigger|grip|stick|raw|list to the
+                                 driver inside the headset's SteamVR (frame/install-driver.sh). `hs spawn` gives
+                                 vrlink controllers that drive flat games' Steam gamepad; PC-side `spawn` breaks it
   bindings [app-key]             what each Frame input does in the app's loaded SteamVR binding (default: latest app)
   watch                          live log of real headset button changes, injected input and game haptics
   cleanup [--keep-vr] [--keep-awake]  hand the setup back: stop run, quit games, clear overrides, despawn,
@@ -27,7 +31,7 @@
   raw    <driver command>        send a protocol line as-is
 hand = left|right|all. btn = a b x y menu view system bumper trigger grip thumbstick thumbrest dpad_up/down/left/right.
 """
-import glob, json, os, re, shutil, socket, subprocess, sys, time
+import glob, json, os, re, shlex, shutil, socket, subprocess, sys, time
 
 # Config via env (see README).
 os.environ.setdefault("DISPLAY", ":0")
@@ -43,7 +47,34 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 ANALOG = {"trigger", "grip"}
 
 
+# `frame-ctl hs <cmd>` targets the driver_framectl copy inside the headset's own SteamVR (frame/install-driver.sh).
+# Controllers spawned there are relayed by vrlink like real ones, which is what PC Steam's flat-game gamepad reads;
+# PC-spawned ones never feed it. Lines go through one ssh relay (UDP can't be ssh-forwarded).
+HS = False
+_relay = None
+RELAY_PY = ("import socket,sys\ns=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.settimeout(3)\n"
+            "for l in sys.stdin:\n s.sendto(l.strip().encode(),('127.0.0.1',47823))\n"
+            " try: r=s.recv(65535).decode()\n except OSError: r='err no reply from headset driver_framectl'\n"
+            " sys.stdout.write(r.replace('\\n','\\x1f')+'\\n');sys.stdout.flush()\n")
+
+
+def send_hs(line):
+    global _relay
+    if _relay is None:
+        _relay = subprocess.Popen(["ssh", "-o", "ConnectTimeout=5", HOST, "python3 -u -c " + shlex.quote(RELAY_PY)],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    _relay.stdin.write(line + "\n"); _relay.stdin.flush()
+    r = _relay.stdout.readline()
+    if not r:
+        sys.exit(f"frame-ctl: ssh relay to {HOST} died (headset driver installed? frame/install-driver.sh)")
+    r = r.rstrip("\n").replace("\x1f", "\n")
+    timeline("hs " + line, r.splitlines()[0] if r else "")
+    return r
+
+
 def send(line, timeout=3):
+    if HS:
+        return send_hs(line)
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.settimeout(timeout)
     s.sendto(line.encode(), ("127.0.0.1", PORT))
@@ -187,6 +218,20 @@ def cef(js, page=None):
     return r.stdout.strip()
 
 
+def stream(appid):
+    """Launch a PC game the way the headset's Library does (Steam game or non-Steam shortcut appid). A launch started
+    on the PC while the Frame is linked waits on a prompt that shows nowhere; this one skips it."""
+    host = socket.gethostname()
+    devs = json.loads(json.loads(cef('new Promise(r=>{const h=SteamClient.RemotePlay.RegisterForDevicesChanges(d=>{'
+                                     'r(JSON.stringify(d));try{h.unregister()}catch(e){}});setTimeout(()=>r("[]"),5000)})')))
+    pc = next((d for d in devs if d["clientName"] == host), None) or next((d for d in devs if d.get("bCanStreamVR")), None)
+    if not pc:
+        sys.exit(f"frame-ctl: headset sees no streaming PC (devices: {[d['clientName'] for d in devs]})")
+    cef(f'SteamClient.Apps.StreamGame({int(appid)},"{pc["clientId"]}",-1)')
+    timeline(f"stream {appid}", pc["clientName"])
+    print(f"streaming {appid} from {pc['clientName']}")
+
+
 def dash(sub):
     if sub in ("hide", "allow"):
         cef(DASH_JS % ("true" if sub == "hide" else "false"), "SharedJSContext")
@@ -228,11 +273,15 @@ def set_mirror(on):
         d = json.load(open(VRSETTINGS))
     except (OSError, ValueError):
         return
-    if d.setdefault("steamvr", {}).get("showMirrorView") == on:
+    blocked = d.get("driver_framectl", {}).get("blocked_by_safe_mode")
+    if d.setdefault("steamvr", {}).get("showMirrorView") == on and not blocked:
         return
     if not os.path.exists(VRSETTINGS + ".bak-frame-ctl"):
         shutil.copy2(VRSETTINGS, VRSETTINGS + ".bak-frame-ctl")
     d["steamvr"]["showMirrorView"] = on
+    if blocked:  # a vrserver crash makes SteamVR safe-mode-block every add-on driver, ours included
+        print("driver_framectl was blocked by SteamVR safe mode; unblocking")
+        d["driver_framectl"]["blocked_by_safe_mode"] = False
     json.dump(d, open(VRSETTINGS, "w"), indent=3)
 
 
@@ -247,10 +296,23 @@ def vr_restart():
         time.sleep(1)
     set_mirror(True)
     sh("steam steam://run/250820 >/dev/null 2>&1 &")
-    t = time.time()
+    t, retried = time.time(), False
     while time.time() - t < 240:
         time.sleep(5)
         if driver_up() and '"activity_level" : 1' in stats(): break
+        if not retried and time.time() - t > 30 and not driver_up() and "Using safe mode" in \
+                open(os.path.join(os.path.dirname(VRSETTINGS), "../logs/vrserver.txt"), errors="replace").read():
+            # SteamVR aborted on its last quit (vrlink watchdog), so it started in safe mode with our driver blocked
+            print("SteamVR started in safe mode (its last quit crashed); unblocking driver_framectl, restarting once")
+            retried = True
+            for n in ("vrserver", "vrmonitor"):
+                sh(f"pkill -x {n}")
+            for _ in range(60):
+                if sh("pgrep -x vrserver").returncode: break
+                time.sleep(1)
+            set_mirror(True)
+            sh("steam steam://run/250820 >/dev/null 2>&1 &")
+            t = time.time()
     else:
         sys.exit(f"frame-ctl: SteamVR/Frame stream not up after 240 s (headset awake? `ssh {HOST} {AWAKE} on`)")
     time.sleep(15)  # SteamVR must settle before a game launch
@@ -407,6 +469,17 @@ def cleanup(keep_vr=False, keep_awake=False):
         step("clear overrides", lambda: ok(send("clear")))
         step("despawn virtual controllers", lambda: ok(send("despawn")))
         step("driver nodash off", lambda: ok(send("nodash off")))
+    def hs_reset():  # headset-side virtual controllers hide the real ones from the headset's Steam (flat-game pad)
+        global HS
+        HS = True
+        try:
+            r = send("ping")
+            if r.startswith("err"): return print("headset driver not loaded")
+            ok(send("clear")); ok(send("despawn"))
+        finally:
+            HS = False
+    if sh(f"ssh -o ConnectTimeout=5 {HOST} 'test -d ~/framectl'", timeout=20).returncode == 0:
+        step("headset driver: clear overrides, despawn", hs_reset)
     step("headset dashboard allowed", lambda: dash("allow"))
     if not keep_awake:
         step("headset may sleep (agent-awake off)",
@@ -502,6 +575,15 @@ def main(a):
     if not a or a[0] in ("-h", "--help", "help"):
         print(__doc__); return
     c, r = a[0], a[1:]
+    if c == "hs":
+        global HS
+        if not r or r[0] not in ("spawn", "despawn", "clear", "press", "hold", "release", "trigger", "grip", "stick",
+                                 "raw", "list"):
+            sys.exit("usage: frame-ctl hs spawn|despawn|clear|press|hold|release|trigger|grip|stick|raw|list ...")
+        HS = True
+        if r[0] == "spawn": return ok(send("spawn"))  # the PC-side spawn checks don't apply on the headset
+        if r[0] == "list": return print(send("list").rstrip())
+        c, r = r[0], r[1:]
     if c == "status": status()
     elif c == "spawn": spawn()
     elif c == "despawn":
@@ -539,6 +621,7 @@ def main(a):
     elif c == "dash": dash(r[0] if r else "status")
     elif c == "vr-restart": vr_restart()
     elif c == "launch": launch(r[0], r[1] if len(r) > 1 else None)
+    elif c == "stream": stream(r[0])
     elif c == "shot": shot(r[0] if r else None, r[1] if len(r) > 1 else None)
     elif c == "focus": focus(r[0] if r else None)
     elif c == "run": run_cmd(r)

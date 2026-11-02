@@ -1,3 +1,4 @@
+#include <map>
 // vrprobe: independent OpenVR client readback for frame-ctl checks.
 // Prints one line per connected device: index class role activity pose(raw) buttons axes.
 #include "openvr.h"
@@ -37,6 +38,8 @@ int main(int argc, char **argv) {
     stat("app_submit_cpu_ms", [](const Compositor_FrameTiming &x) { return x.m_flSubmitFrameMs + x.m_flWaitGetPosesCalledMs; });
     uint32_t dropped = 0, repro = 0; for (auto &x : all) { dropped += x.m_nNumDroppedFrames; repro += (x.m_nReprojectionFlags != 0); }
     printf("dropped=%u reprojected_frames=%u\n", dropped, repro);
+    std::map<uint32_t, uint32_t> flags; for (auto &x : all) flags[x.m_nReprojectionFlags]++;
+    printf("reprojection_flags:"); for (auto &f : flags) printf(" 0x%x=%u", f.first, f.second); printf("\n");
     VR_Shutdown(); return 0;
   }
   if (argc == 5 && !strcmp(argv[1], "setbool")) {  // vrprobe setbool <section> <key> 0|1
