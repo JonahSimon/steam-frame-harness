@@ -17,6 +17,7 @@
   run    start <label> | stop | note <text>   per-run log folder (see README)
   vr-restart                     restart PC SteamVR (reloads driver_framectl), wait until the Frame streams, spawn
   launch <rungameid> [window]    Steam-launch a game, wait for its frames, then `dash hide`
+  console <window> <cmd>         type a console command into a Bethesda VR game (Skyrim VR, Fallout 4 VR) window
   stream <appid>                 launch a PC game from the headset's Steam (flat games; skips PC-side prompts)
   hs <cmd> [args]                send spawn|despawn|clear|press|hold|release|trigger|grip|stick|raw|list to the
                                  driver inside the headset's SteamVR (frame/install-driver.sh). `hs spawn` gives
@@ -84,6 +85,39 @@ def send(line, timeout=3):
         sys.exit("frame-ctl: no reply from driver_framectl on UDP 47823 (SteamVR not running or driver not loaded)")
     timeline(line, r.splitlines()[0] if r else "")
     return r
+
+
+def me():
+    """Who is calling: the agent session (Claude Code, Codex) or FRAMECTL_OWNER; "" for a person at a terminal."""
+    for k in ("FRAMECTL_OWNER", "CLAUDE_CODE_SESSION_ID", "CODEX_SESSION_ID", "CODEX_THREAD_ID"):
+        if os.environ.get(k):
+            return os.environ[k]
+    return ""
+
+
+def foreign_run():
+    """The active run if someone else owns it (live collector, owner differs from me()), else None (B10)."""
+    d = run_dir()
+    if not d:
+        return None
+    try:
+        os.kill(int(open(os.path.join(d, ".collector.pid")).read()), 0)
+    except (OSError, ValueError):
+        return None  # stale pointer, collector gone
+    try:
+        owner = open(os.path.join(d, ".owner")).read().strip()
+    except OSError:
+        owner = ""
+    return d if owner != me() else None
+
+
+def guard(what):
+    """Refuse a state-changing command while another agent's run is active: one headset, one driver, and their
+    timeline would log our commands as theirs. Read-only commands (status, shot, bindings, doctor...) skip this."""
+    d = foreign_run()
+    if d and not os.environ.get("FRAMECTL_FORCE"):
+        sys.exit(f"frame-ctl: {what}: headset in use by another agent's run {d}. Stop and ask; don't take it over. "
+                 "(FRAMECTL_FORCE=1 overrides.)")
 
 
 def run_dir():
@@ -289,6 +323,62 @@ def set_mirror(on):
     json.dump(d, open(VRSETTINGS, "w"), indent=3)
 
 
+MEM_WARN_GB = float(os.environ.get("FRAMECTL_MEM_WARN_GB", 8))
+
+
+def mem_check(what):
+    """Warn when RAM is short: a big modded VR game plus agents got an agent OOM-killed (blocker B9). zram swap
+    still costs RAM, so MemAvailable is the number that matters."""
+    try:
+        gb = int(re.search(r"MemAvailable:\s+(\d+)", open("/proc/meminfo").read()).group(1)) / 1048576
+    except (OSError, AttributeError):
+        return
+    if gb < MEM_WARN_GB:
+        print(f"warning: only {gb:.1f} GB RAM available before {what} (want >= {MEM_WARN_GB:g}). A big modded game can "
+              "get processes OOM-killed, agents included. Free RAM first (e.g. `vr-prep on`) and run no parallel agents.")
+    timeline(f"mem {what}", f"{gb:.1f}GB")
+
+
+CONSOLE_KEYS = {" ": "space", ".": "period", "_": "underscore", "-": "minus", '"': "quotedbl", ":": "colon",
+                "/": "slash", ",": "comma", "'": "apostrophe", "=": "equal", "+": "plus"}
+
+
+def console(win, command):
+    """Bethesda VR console (B8). XTEST keys to the focused window one by one: `xdotool type` drops characters and
+    `--window` (XSendEvent) is ignored. Lowercased: Shift+O toggles MGO's Open Animation Replacer, which eats keys."""
+    need("xdotool")
+    w = window(win)
+    if not w:
+        sys.exit(f"frame-ctl: no window titled {win!r}")
+    focus(win)
+    key = lambda k: (sh(f"xdotool key {k}"), time.sleep(0.15))
+    key("grave"); time.sleep(2)  # the first open stalls the game ~1 s and eats keys
+    for ch in command.lower():
+        key(CONSOLE_KEYS.get(ch, ch))
+    time.sleep(0.3); key("Return"); time.sleep(1)
+    if not command.lower().startswith(("coc", "cow", "load", "qqq")):  # after these the console is already gone
+        key("grave")
+    timeline(f"console {win}", command)
+    print(f"typed into {win}: {command.lower()}")
+
+
+def check_roles(tries=3):
+    """B6: the virtual controllers must hold the left/right roles. If one doesn't, re-send spawn (re-asserts the
+    roles via the hide-real-controllers path) and check again."""
+    p = os.path.join(HERE, "probe", "vrprobe")
+    if not os.path.exists(p):
+        return
+    for i in range(tries):
+        out = sh(p, timeout=20).stdout
+        roles = {m.group(1) for m in re.finditer(r"class=2 role=(\d)", out)}
+        if {"1", "2"} <= roles:
+            return
+        print(f"warning: controller roles {sorted(roles)} (want left=1 and right=2); re-asserting")
+        timeline("roles", ",".join(sorted(roles)))
+        ok(send("spawn")); time.sleep(2)
+    print("warning: virtual controllers still lack a hand role; input to that hand may be ignored")
+
+
 def vr_restart():
     refuse_if_busy()
     os.makedirs(STATE, exist_ok=True)
@@ -320,7 +410,7 @@ def vr_restart():
     else:
         sys.exit(f"frame-ctl: SteamVR/Frame stream not up after 240 s (headset awake? `ssh {HOST} {AWAKE} on`)")
     time.sleep(15)  # SteamVR must settle before a game launch
-    ok(send("nodash on")); ok(send("spawn"))
+    ok(send("nodash on")); ok(send("spawn")); time.sleep(2); check_roles()
     try:
         dash("hide")
     except SystemExit as e:
@@ -334,7 +424,7 @@ def spawned():
 
 
 def spawn():
-    ok(send("spawn"))
+    ok(send("spawn")); time.sleep(2); check_roles()
     running = sorted(set(steam_game_pids().values()))
     if running:  # games enumerate controllers at startup and ignore ones added later (seen with Skyrim VR)
         print(f"warning: game {', '.join(running)} was already running; it may ignore the virtual controllers "
@@ -343,6 +433,7 @@ def spawn():
 
 def launch(gameid, win=None):
     refuse_if_busy(gameid)
+    mem_check(f"launch {gameid}")
     if driver_up() and not spawned():
         spawn(); time.sleep(2)
     win = win or GAME_WIN
@@ -438,6 +529,8 @@ def busy_reason(own=None):
             return f"vr-restart in progress (pid {pid})"
     except (OSError, ValueError, IndexError):
         pass
+    if foreign_run():
+        return f"another agent's run {foreign_run()} is active"
     others = sorted({g for g in steam_game_pids().values() if g != own and not (own and g.startswith(own))})
     return f"Steam game {', '.join(others)} is running" if others else None
 
@@ -565,6 +658,7 @@ def run_cmd(args):
         d = os.path.expanduser(f"~/frame-ctl-runs/{time.strftime('%Y%m%d-%H%M%S')}-{label}")
         os.makedirs(d)
         os.makedirs(STATE, exist_ok=True)
+        open(os.path.join(d, ".owner"), "w").write(me())
         open(RUNPTR, "w").write(d)
         subprocess.Popen([os.path.join(HERE, "frame-ctl-logs"), "start", d], start_new_session=True,
                          stdout=open(os.path.join(d, "collector.log"), "a"), stderr=subprocess.STDOUT)
@@ -588,6 +682,11 @@ def main(a):
     if not a or a[0] in ("-h", "--help", "help"):
         print(__doc__); return
     c, r = a[0], a[1:]
+    readonly = c in ("status", "shot", "bindings", "watch", "doctor", "busy") or (c == "run" and r[:1] == ["note"]) \
+        or (c == "raw" and r[:1] in (["ping"], ["list"], ["poses"])) or (c == "hs" and r[:1] == ["list"]) \
+        or (c == "dash" and r[:1] in ([], ["status"]))
+    if not readonly and not (c == "run" and r[:1] == ["start"]):  # run start has its own check
+        guard(" ".join(a[:2]))
     if c == "hs":
         global HS
         if not r or r[0] not in ("spawn", "despawn", "clear", "press", "hold", "release", "trigger", "grip", "stick",
@@ -635,6 +734,7 @@ def main(a):
     elif c == "vr-restart": vr_restart()
     elif c == "launch": launch(r[0], r[1] if len(r) > 1 else None)
     elif c == "stream": stream(r[0])
+    elif c == "console": console(r[0], " ".join(r[1:]))
     elif c == "shot": shot(r[0] if r else None, r[1] if len(r) > 1 else None)
     elif c == "focus": focus(r[0] if r else None)
     elif c == "run": run_cmd(r)

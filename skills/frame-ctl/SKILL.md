@@ -12,8 +12,10 @@ The repo README has the details. This is the loop.
 1. `frame-ctl doctor`. Every line should say `ok`; each FAIL names its fix. If the driver isn't answering, run
    `frame-ctl vr-restart` (starts SteamVR, waits for the headset stream, spawns the virtual controllers, hides
    the headset dashboard). If the stream won't come up, wake the headset (`frame-ctl wake`, `frame-ctl worn on`).
-2. **One agent per headset.** If `frame-ctl run start` refuses, or `doctor`/`status` shows someone else's run or
-   game, stop and report. Don't take the headset over: a `vr-restart` kills the other agent's game.
+2. **One agent per headset.** Run `frame-ctl busy` first. If it names another agent's run or a game you didn't
+   start, stop and report. While another agent's run is active, every state-changing frame-ctl command refuses
+   (runs record their owner's session). Don't set FRAMECTL_FORCE to get past it: a `vr-restart` kills their game.
+   `launch` warns when RAM is short (< 8 GB available); then free memory (`vr-prep on`) and run no parallel agents.
 
 ## Test
 
@@ -38,6 +40,9 @@ The repo README has the details. This is the loop.
    them. Never end a session with a game, SteamVR or the keep-awake override still running.
 
 Your own test scripts: call `frame-ctl busy <gameid>` before touching SteamVR and stop if it prints a reason.
+
+Bethesda VR games (Skyrim VR, Fallout 4 VR): `frame-ctl console "<window title>" "<command>"` types a console
+command (one key at a time, lowercased); e.g. `frame-ctl console "Fallout4VR" "player.additem 21b3b 1"`.
 
 Rules: keep the game's desktop window focused (`frame-ctl focus <window>`) while injecting input. Don't edit
 SteamVR settings or Steam vdfs while they run. Don't run heavy parallel work next to a big modded game: the PC

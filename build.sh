@@ -11,7 +11,12 @@ for f in openvr_driver.h openvr.h; do
   [ -f $H/$f ] || curl -fsSL -o $H/$f https://raw.githubusercontent.com/ValveSoftware/openvr/$OPENVR_TAG/headers/$f
 done
 python3 tools/bake-hand-poses.py "$SV" > driver/hand_poses.h  # SteamVR's own hand poses, not redistributed
-g++ -std=c++17 -O2 -shared -fPIC -fvisibility=hidden -Wall -I$H driver/framectl.cpp -o driver/framectl/bin/linux64/driver_framectl.so -lpthread
+SO=driver/framectl/bin/linux64/driver_framectl.so
+g++ -std=c++17 -O2 -shared -fPIC -fvisibility=hidden -Wall -I$H driver/framectl.cpp -o $SO.new -lpthread
+# Only replace the loaded driver when it changed: SteamVR must restart (~1.5 min, kills the game) to load a new one
+# (blocker B5), so an unchanged build shouldn't ask for that. Most features live in frame-ctl and need no restart.
+if cmp -s $SO.new $SO; then rm $SO.new; echo "driver unchanged: no SteamVR restart needed"
+else mv $SO.new $SO; echo "driver changed: restart SteamVR to load it (frame-ctl vr-restart)"; fi
 g++ -O2 -I$H probe/vrprobe.cpp -o probe/vrprobe -L"$SV/bin/linux64" -lopenvr_api -Wl,-rpath,"$SV/bin/linux64"
 echo built
 if [ "${1:-}" = install ]; then

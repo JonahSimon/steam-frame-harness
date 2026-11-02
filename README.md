@@ -185,6 +185,12 @@ Only one run can be active: there is one headset.
 With SteamVR up and the headset streaming: `tests/driver.sh`, `tests/input.sh` (injected values read back by
 `vrprobe`), `tests/pose.sh`, and `tests/run-folder.sh [dir]` after a run.
 
+## Sharing the headset
+
+`frame-ctl run start` records who started the run (the agent's session id, or `FRAMECTL_OWNER`). While that run's
+collector is alive, every state-changing command from anyone else refuses and `frame-ctl busy` names the run;
+read-only ones (`status`, `shot`, `bindings`, `doctor`, `busy`, `watch`) still work. `FRAMECTL_FORCE=1` overrides.
+
 ## Gotchas
 
 - Games ignore controller input while their desktop window is unfocused. `shot` hands focus back after capturing;
