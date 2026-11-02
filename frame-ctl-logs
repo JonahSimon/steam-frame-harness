@@ -2,6 +2,7 @@
 # frame-ctl-logs start|stop <run-dir> : log collector behind `frame-ctl run`. Not meant to be called directly.
 #   start: background loop every $FRAMECTL_LOG_INTERVAL s (default 60): vrcmd --stats snapshot + JPEG screenshot
 #          (headset view, or $FRAMECTL_SHOT_WINDOW; "none" disables). Focus goes back to whatever had it.
+#          Plus frame-sensors.csv: headset temps, throttling, power rails, battery, link (frame/frame-sensors.py).
 #   stop : stops the loop, then copies everything written since the run started (PC SteamVR + Steam logs, driver log,
 #          Frame Steam/SteamVR/XRService logs + journal, Proton logs, game/script-extender logs).
 # Config (env): FRAMECTL_FRAME_HOST (ssh alias, default "frame"), FRAMECTL_SHOT_WINDOW, FRAMECTL_GAME_LOG_DIRS (":"-separated dirs searched for new *.log/*.txt; defaults to all Proton prefixes'
@@ -24,6 +25,9 @@ start)
   for f in $STEAM/logs/*.txt $STATE/driver.log; do [ -f "$f" ] && echo "$(stat -c %s "$f") $f"; done > "$d/.offsets"
   echo $$ > "$d/.collector.pid"
   log "collector started"
+  # headset thermals/throttling/power/battery/link every $FRAMECTL_SENSOR_INTERVAL s (default 5), streamed over ssh
+  ssh -o ConnectTimeout=5 "$HOST" "python3 -u - ${FRAMECTL_SENSOR_INTERVAL:-5}" < "$HERE/frame/frame-sensors.py" \
+    > "$d/frame-sensors.csv" 2>> "$d/collector.log" &
   while :; do
     ts=$(date +%H%M%S)
     timeout 15 $VRCMD --stats > "$d/stats/$ts.json" 2>&1

@@ -172,7 +172,8 @@ Driver protocol (UDP, one line in, text out): `ping`, `list`, `poses`, `set <dev
 
 `frame-ctl run start <label>` creates `~/frame-ctl-runs/<timestamp>-<label>/`; `run stop` fills it:
 `input-timeline.tsv` (every frame-ctl command, ms timestamps; `run note` adds markers), `stats/` (`vrcmd --stats`
-each interval), `shots/` (JPEG headset view each interval), `pc-steam-logs/` (only what SteamVR/Steam wrote during
+each interval), `frame-sensors.csv` (headset temps, thermal throttle state, CPU/GPU clocks and caps, power rails,
+battery, dongle/Wi-Fi signal every `FRAMECTL_SENSOR_INTERVAL` s, default 5; paths from frame-perf-overlay), `shots/` (JPEG headset view each interval), `pc-steam-logs/` (only what SteamVR/Steam wrote during
 the run), `framectl-driver.log`, `pc-journal-user.log`, `frame/` (headset Steam/SteamVR logs, newest XRService log,
 system and user journal), `proton/`, `game/` (logs under Proton prefixes' `My Games` that changed), `MANIFEST.txt`.
 Only one run can be active: there is one headset.
