@@ -1,0 +1,10 @@
+[Unit]
+Description=frame-ctl: keep the dash-hide hook in the headset's Steam while ~/.local/state/framectl/dash-hide exists
+
+[Service]
+ExecStart=/usr/bin/python3 -u %h/bin/framectl-dashguard
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

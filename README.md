@@ -106,8 +106,10 @@ When nobody uses the headset, the Frame's Steam client reopens its dashboard rig
 `ShowOverlay#1 valve.steam.gamepadui.main` to its local SteamVR). vrlink mirrors that dashboard to the PC, and
 while it is open the PC dashboard owns all input (`IsInputAvailable() == false`), so games ignore every
 controller. `frame-ctl dash hide` injects a small hook into the headset's Steam JS that drops that one message,
-then hides the dashboard. The hook lasts until Steam restarts on the headset. A game launch re-opens the
-dashboard, so `frame-ctl launch` and `vr-restart` run `dash hide` for you.
+then hides the dashboard. A Steam restart on the headset drops the hook; while `dash hide` is in effect the
+headset's `framectl-dashguard` user unit puts it back within 3 s and hides the dashboard again (`dash allow` and
+`cleanup` turn that off). A game launch re-opens the dashboard, so `frame-ctl launch` and `vr-restart` run
+`dash hide` for you.
 
 The driver's `nodash on` also drops vrlink's PC-side reopen call (`IVRServerInternal_XXX` slot 57; `dash close`
 calls slot 58). Those slots were found by disassembling `driver_vrlink.so` from SteamVR 2.18.4, so the driver
@@ -129,7 +131,7 @@ PC: Linux, Steam + SteamVR, the Frame streaming over vrlink, `g++`, `curl`, `pyt
    `vrpathreg`, links `frame-ctl` into `~/.local/bin`, turns on SteamVR's VR View mirror window.
 2. Headset: give it an ssh alias (default `frame`), then `frame/install.sh frame`. That installs the keep-awake
    toggle (`~/bin/agent-awake on|off|status`, a wrapper that fakes the proximity calibration so the idle sensor
-   reads as worn) and masks SteamOS's `steam(vr)-web-debug-portforward` units, which otherwise expose Steam's
+   reads as worn), the `framectl-dashguard` user unit (see How it works), and masks SteamOS's `steam(vr)-web-debug-portforward` units, which otherwise expose Steam's
    debug port on your LAN. `frame/install.sh frame uninstall` reverts everything.
 3. `frame-ctl vr-restart`, then `frame-ctl doctor`.
 4. Optional Proton logs during runs: symlink `proton/user_settings.py` into your Proton/GE-Proton dir as
@@ -151,7 +153,7 @@ first, never take over a headset someone else is using, and finish with `frame-c
 ```bash
 frame-ctl vr-restart                      # SteamVR up, headset streaming, virtual controllers, dash hidden
 frame-ctl run start smoke                 # ~/frame-ctl-runs/<ts>-smoke/
-frame-ctl launch 450390                   # Steam app id or rungameid; waits for frames, dash hide
+frame-ctl launch 450390                   # Steam app id or rungameid; waits for frames (or a start stage), dash hide
 frame-ctl pose hmd level 0                # upright head, looking ahead
 frame-ctl press right trigger             # menus usually confirm on the trigger
 frame-ctl stick left 0 1 2                # walk forward 2 s

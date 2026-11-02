@@ -202,7 +202,8 @@ def wake():
 # The Frame's Steam client re-opens its dashboard ("ShowOverlay#1 valve.steam.gamepadui.main" over the websocket to
 # its SteamVR) right after every hide while nobody uses it, and vrlink mirrors that to the PC, where the dashboard
 # then owns all input (IsInputAvailable=0). `dash hide` drops that one message in the Frame's Steam JS and hides.
-# The patch lives in the Frame's SharedJSContext, so it is gone after Steam restarts on the Frame (re-run dash hide).
+# The patch lives in the Frame's SharedJSContext, so a Steam restart on the Frame drops it; the headset's
+# framectl-dashguard (frame/dashguard.py, keep its HOOK in sync) re-installs it while dash hide is in effect.
 DASH_JS = """(()=>{if(!window.__fcDrop){window.__fcDrop=1;const o=WebSocket.prototype.send;WebSocket.prototype.send=function(d){
 try{if(window.__noShowMain&&typeof d!="string"){const s=new TextDecoder("latin1").decode(d instanceof ArrayBuffer?new Uint8Array(d):d);
 if(s.includes("ShowOverlay#1")&&s.includes("valve.steam.gamepadui.main")){(window.__fcDropped=window.__fcDropped||[]).push(Date.now());return}}}
@@ -234,6 +235,9 @@ def stream(appid):
 
 def dash(sub):
     if sub in ("hide", "allow"):
+        # flag for the headset's framectl-dashguard, which re-installs the hook after a Steam restart there (B4)
+        f = "~/.local/state/framectl/dash-hide"
+        sh(f"ssh -o ConnectTimeout=5 {HOST} " + shlex.quote(f"mkdir -p ~/.local/state/framectl && touch {f}" if sub == "hide" else f"rm -f {f}"), timeout=20)
         cef(DASH_JS % ("true" if sub == "hide" else "false"), "SharedJSContext")
         want = "true" if sub == "hide" else "false"
         got = cef("String(window.__fcDrop === 1) + ',' + String(window.__noShowMain)", "SharedJSContext").strip('"')
@@ -345,14 +349,23 @@ def launch(gameid, win=None):
     sh(f"steam steam://rungameid/{gameid} >/dev/null 2>&1 &")
     timeline(f"launch {gameid}", "")
     t = time.time()
+    stage = False
     while time.time() - t < 300:
         time.sleep(5)
         if (not win or window(win)) and re.search(r'"average_application_gpu_time_ms" : [1-9]', stats()): break
+        # Games like Half-Life: Alyx sit on a start stage ("Press Trigger to Start") set through a stage override and
+        # submit no frames of their own until input, so frame stats alone would time out
+        # (logged in the game's own vrclient_<exe>.txt; the pid is new each launch, so old lines can't match)
+        pids = {str(p) for p, g in steam_game_pids().items() if g == str(gameid) or g.startswith(str(gameid))}
+        logs = glob.glob(os.path.expanduser("~/.local/share/Steam/logs/vrclient_*.txt"))
+        if pids and any(f"SetStageOverride_Async: pid {p} " in open(f, errors="replace").read() for f in logs for p in pids):
+            stage = True; break
     else:
         sys.exit("frame-ctl: no game frames after 300 s")
     time.sleep(10)
     dash("hide")
-    print("ok", round(time.time() - t), "s")
+    print("ok", round(time.time() - t), "s" + (" (game shows a start/loading stage and waits for input: look with "
+                                                "`frame-ctl shot \"\" vrview`, it may say press the trigger)" if stage else ""))
 
 
 def last_bindings():
