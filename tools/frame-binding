@@ -30,6 +30,10 @@ def remap_table(src_type):
     table = {}
     for r in l.get("autoremappings", []):
         to = r["to"] if isinstance(r["to"], list) else [r["to"]]
+        # SteamVR spreads the left upper face button over dpad left/right/up, right next to dpad down (the lower
+        # one); a slightly sideways press then fires both (Boneworks: slow-mo also opens the menu). Keep up only.
+        if len(to) > 1 and all("/input/dpad_" in t for t in to):
+            to = [t for t in to if t.endswith("dpad_up")] or to
         table[r["from"]] = list(dict.fromkeys(to))
         if r.get("mirror", True):  # entries default to applying to the other hand too
             other = lambda p: p.replace("/right/", "/@/").replace("/left/", "/right/").replace("/@/", "/left/")
