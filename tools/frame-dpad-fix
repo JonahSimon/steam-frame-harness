@@ -1,0 +1,32 @@
+#!/usr/bin/env python3
+"""frame-dpad-fix [--check]
+
+SteamVR's Frame remap table spreads the left upper face button of Touch/Index/Pico bindings over dpad left, right and
+up, right next to dpad down (the lower button). A slightly sideways press on down then fires both (Boneworks/Bonelab:
+slow-mo also opens the menu). This keeps dpad up only, for every game SteamVR auto-converts. SteamVR updates restore
+the file; steamvr-update-watch reruns this. Backup: <file>.bak-dpad. Restart SteamVR to apply.
+"""
+import json, os, shutil, sys
+
+SV = os.environ.get("STEAMVR", os.path.expanduser("~/.local/share/Steam/steamapps/common/SteamVR"))
+F = f"{SV}/drivers/frame_controller/resources/input/frame_controller_remapping.json"
+
+d = json.load(open(F))
+fix = []
+for l in d["layouts"]:
+    for r in l.get("autoremappings", []):
+        to = r["to"] if isinstance(r["to"], list) else [r["to"]]
+        up = [t for t in to if t.endswith("/input/dpad_up")]
+        if len(to) > 1 and up and all("/input/dpad_" in t for t in to):
+            fix.append((l["from_controller_type"], r))
+            r["to"] = up
+if not fix:
+    print("frame-dpad-fix: already applied")
+    sys.exit(0)
+if "--check" in sys.argv:
+    print(f"frame-dpad-fix: not applied ({len(fix)} entries)")
+    sys.exit(1)
+if not os.path.exists(F + ".bak-dpad"):
+    shutil.copy2(F, F + ".bak-dpad")
+json.dump(d, open(F, "w"), indent=3)
+print("frame-dpad-fix: " + ", ".join(f"{c} {r['from']}" for c, r in fix) + " -> dpad_up only (restart SteamVR)")

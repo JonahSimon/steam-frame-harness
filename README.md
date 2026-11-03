@@ -63,6 +63,11 @@ Find candidates across your whole library without launching anything: `tools/fra
 installed VR games into native / convertible / touch-only / legacy / openxr and prints the `frame-binding` command
 for each convertible one.
 
+SteamVR's own Touch/Index -> Frame table maps the left upper face button (usually the game menu) to dpad left, right
+and up, next to dpad down, so sideways presses on down fire both. `tools/frame-dpad-fix` trims it to dpad up for every
+auto-converted game (OpenXR ones like Bonelab included; restart SteamVR after). SteamVR updates restore the table;
+the `steamvr-update-watch` hook reruns it. `frame-binding` applies the same rule.
+
 ## Flat (non-VR) games
 
 PC Steam turns the Frame controllers into one gamepad ("Steam Frame Controllers", then a uinput Xbox pad for the
