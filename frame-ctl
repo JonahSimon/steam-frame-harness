@@ -47,7 +47,6 @@ import glob, json, os, re, shlex, shutil, socket, subprocess, sys, time
 os.environ.setdefault("DISPLAY", ":0")
 PORT = 47823
 HOST = os.environ.get("FRAMECTL_FRAME_HOST", "frame")            # ssh alias of the headset
-AWAKE = os.environ.get("FRAMECTL_AWAKE_CMD", "~/bin/agent-awake")  # headset-side keep-awake toggle (see README)
 GAME_WIN = os.environ.get("FRAMECTL_SHOT_WINDOW", "")              # game desktop window title for focus/shot
 STATE = os.path.expanduser("~/.local/state/frame-ctl")
 RUNPTR = os.path.join(STATE, "current-run")
@@ -226,26 +225,6 @@ def shot(out=None, name=None):
     print(out)
 
 
-def awake_state():
-    """'active' / 'inactive' for the headset's agent-noprox (agent-awake), '' if unreachable."""
-    return sh(f"ssh -o ConnectTimeout=5 -o BatchMode=yes {HOST} 'systemctl is-active agent-noprox'",
-              timeout=20).stdout.strip()
-
-
-def awake(on):
-    """agent-awake on|off, but only when it changes something: both restart the headset's SteamVR, which kills every
-    game running on the headset. Refuses while one runs (FRAMECTL_FORCE=1 overrides)."""
-    want = "active" if on else "inactive"
-    if awake_state() == want:
-        return f"already {'on' if on else 'off'}"
-    hg = headset_games()
-    if hg and not os.environ.get("FRAMECTL_FORCE"):
-        raise SystemExit(f"skipped: agent-awake {'on' if on else 'off'} restarts the headset's SteamVR and would kill "
-                         f"{hs_game_names(hg)} running on it. Quit it first (FRAMECTL_FORCE=1 overrides).")
-    r = sh(f"ssh -o ConnectTimeout=5 {HOST} '{AWAKE} {'on' if on else 'off'}'", timeout=120)
-    return (r.stdout + r.stderr).strip()[-200:]
-
-
 WORN_FLAG = "~/.local/state/framectl/worn"  # headset side; framectl-dashguard keeps /proximity held while it exists
 
 
@@ -254,8 +233,7 @@ def worn(on):
     Holds hmd /proximity = 1 inside the headset's own SteamVR through its driver_framectl: XRService's user presence
     and Steam's sleep follow SteamVR's standby state, so this keeps the whole headset awake without restarting
     anything (measured 2026-11-17: standby -> active within 5 s, held for 7 min). framectl-dashguard re-asserts it
-    after a SteamVR restart there. Falls back to agent-awake (eeprom prox fake, which restarts the headset's SteamVR
-    and kills games on it) only when the headset driver isn't installed."""
+    after a SteamVR restart there. Needs the headset driver (frame/install-driver.sh)."""
     global HS
     hssh(f"mkdir -p ~/.local/state/framectl && touch {WORN_FLAG}" if on else f"rm -f {WORN_FLAG}", timeout=20)
     HS = True
@@ -272,15 +250,10 @@ def worn(on):
             HS = False
     if r.startswith("ok"):
         print("headset: /proximity", "held at 1 (headset driver)" if on else "released")
-    elif on:
-        print(f"headset driver not answering ({r.strip()}); falling back to agent-awake")
-    if on and not r.startswith("ok"):
-        print("headset agent-awake:", awake(True))
-    if not on:  # also undo a legacy agent-awake on (no-op when already off; refuses while a headset game runs)
-        try:
-            print("headset agent-awake:", awake(False))
-        except SystemExit as e:
-            print("headset agent-awake:", e)
+    else:
+        print(f"headset driver not answering ({r.strip()}): is the headset's SteamVR up and driver_framectl installed "
+              "(frame/install-driver.sh)?" + (" The flag is set, so framectl-dashguard holds /proximity once it is."
+                                               if on else ""))
     if driver_up():
         ok(send("set hmd /proximity 1" if on else "rel hmd /proximity"))
     elif on:
@@ -619,7 +592,7 @@ HS_GAMES_PY = ("import glob\nfor d in glob.glob('/proc/[0-9]*'):\n try:\n  e=ope
 
 def headset_games():
     """{SteamGameId: [process names]} of games running ON the headset (Proton/Lepton in its gamescope), {} if none or
-    the headset is unreachable. These die whenever the headset's SteamVR restarts (e.g. agent-awake on/off)."""
+    the headset is unreachable. These die whenever the headset's SteamVR restarts."""
     r = sh(f"ssh -o ConnectTimeout=5 -o BatchMode=yes {HOST} {shlex.quote('python3 -c ' + shlex.quote(HS_GAMES_PY))}",
            timeout=20)
     out = {}
@@ -732,8 +705,8 @@ def doctor():
             "probe/vrprobe setbool steamvr showMirrorView 1, restart SteamVR")
     if up:  # vrcmd can start SteamVR when it isn't running
         chk('"activity_level" : 1' in stats(), "headset active (activity_level 1)", "frame-ctl wake / worn on")
-    r = sh(f"ssh -o ConnectTimeout=5 -o BatchMode=yes {HOST} 'test -x {AWAKE} && echo y'", timeout=20)
-    chk(r.stdout.strip() == "y", f"ssh {HOST} works and {AWAKE} exists", "frame/install.sh")
+    r = sh(f"ssh -o ConnectTimeout=5 -o BatchMode=yes {HOST} 'test -x ~/bin/framectl-dashguard && echo y'", timeout=20)
+    chk(r.stdout.strip() == "y", f"ssh {HOST} works and the headset side is installed", "frame/install.sh")
     r = sh(f"{HERE}/frame-cef 'SteamClient.OpenVR.VROverlay.IsDashboardVisible()'", timeout=30)
     if chk(r.returncode == 0, "Steam CEF on the headset reachable over ssh tunnel", "SteamOS developer mode -> CEF remote debugging"):
         chk(r.stdout.strip() == "false", "headset dashboard closed", "frame-ctl dash hide")
@@ -751,8 +724,8 @@ def doctor():
         age = int(hs.get("worn_age_h", -1))
         chk(age < STALE_H or run_dir(), "no stale worn flag on the headset (keeps it awake, drains the battery)",
             f"set {age} h ago with no active run: `frame-ctl worn off` (or `cleanup`)")
-        chk(hs.get("awake") != "active", "legacy agent-awake off (worn uses the headset driver now)",
-            "frame-ctl worn off (restarts the headset's SteamVR; quit headset games first)")
+        chk("legacy_noprox" not in hs, "legacy agent-awake (agent-noprox) removed",
+            "frame/install.sh (removes it; restarts nothing unless it is still on)")
         chk("has_ovprobe" in hs and "has_frame-ei" in hs, "native tools on the headset (ovprobe, frame-ei)",
             "frame-ctl native setup")
         if int(hs.get("hs_virtual", 0)):
@@ -767,7 +740,7 @@ def doctor():
 
 HS_STATE_SH = ("f=~/.local/state/framectl/dash-hide; [ -e $f ] && echo dash_hide_age_h=$(( ($(date +%s) - $(stat -c %Y $f)) / 3600 )); "
                "f=~/.local/state/framectl/worn; [ -e $f ] && echo worn_age_h=$(( ($(date +%s) - $(stat -c %Y $f)) / 3600 )); "
-               "echo dashguard=$(systemctl --user is-active framectl-dashguard); echo awake=$(systemctl is-active agent-noprox); "
+               "echo dashguard=$(systemctl --user is-active framectl-dashguard); [ -e /etc/systemd/system/agent-noprox.service ] && echo legacy_noprox=1; "
                "for t in ovprobe frame-ei; do [ -x ~/.local/bin/$t ] && echo has_$t=1; done; python3 -c ")
 # headset driver: ping reply, and how many virtual (override, connected) hand controllers it has
 HS_DRIVER_PY = """import socket
@@ -806,7 +779,7 @@ def status():
     if not hs:
         return print(f"--- Frame: unreachable over ssh ({HOST})")
     print(f"--- Frame: worn flag " + (f"set {hs['worn_age_h']} h ago" if "worn_age_h" in hs else "off")
-          + f" (/proximity override {hs.get('hs_prox', '?')}), agent-awake {hs.get('awake', '?')}, "
+          + f" (/proximity override {hs.get('hs_prox', '?')}), "
           f"dashguard {hs.get('dashguard', '?')}, dash-hide flag "
           + (f"set {hs['dash_hide_age_h']} h ago" if "dash_hide_age_h" in hs else "off")
           + f", headset driver {hs.get('hs_driver', 'not answering').replace('_', ' ')}"
@@ -899,13 +872,18 @@ def native(r):
             for _ in range(20):
                 if hs_virtual_spawned(): break
                 time.sleep(0.5)
-        # confound guard: read the controller's pose back from SteamVR and cast its laser; never click blind
+        # confound guard: read the controller's pose back from SteamVR and cast its laser; never click blind.
+        # On a miss, measure what moved it (Recline VR rotates every device pose for lying down) and undo that.
+        cur, away = aim, aim[:3] + ["0", "0", "1", "0"]
         for _ in range(10):
-            ok(send("pose right world " + " ".join(aim)))
+            ok(send("pose right world " + " ".join(cur)))
             time.sleep(0.3)
             ray = hssh(f"~/.local/bin/ovprobe {key} ray").stdout.strip()
             m = re.search(r"ray uv=([-\d.]+),([-\d.]+)", ray)
             if m and abs(float(m[1]) - 0.01) < 0.03 and abs(float(m[2]) - 0.5) < 0.1: break
+            fx = hssh(f"~/.local/bin/ovprobe {key} fix {' '.join(cur)} {' '.join(aim)}").stdout
+            f = {l.split()[0]: l.split()[1:] for l in fx.splitlines() if l.split()[:1] in (["fix"], ["away"])}
+            if len(f.get("fix", [])) == 7: cur, away = f["fix"], f.get("away", away)
         else:
             sys.exit(f"frame-ctl: native focus: the controller's laser doesn't hit {key} at its left edge ({ray}); "
                      "not clicking")
@@ -913,7 +891,7 @@ def native(r):
             ok(send(f"set right /input/trigger/value {v}")); ok(send(f"set right /input/trigger/click {v}"))
             time.sleep(0.15)
         # point it away so the laser stops driving the cursor; keyboard focus stays and the mouse follows it
-        ok(send("pose right world " + " ".join(aim[:3]) + " 0 0 1 0"))
+        ok(send("pose right world " + " ".join(away)))
         if not had and "--keep" not in a:
             # gamescope keeps the focus after the controller goes away, and spawned controllers hide the real ones
             ok(send("rel right all")); ok(send("despawn"))

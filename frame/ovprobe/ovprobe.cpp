@@ -1,10 +1,14 @@
-// ovprobe <overlay-key> [aim <u> <v> [sx sy sz] | ray] : runs on the headset.
+// ovprobe <overlay-key> [aim <u> <v> [sx sy sz] | ray | fix <sent 7> <target 7>] : runs on the headset.
 // Prints a SteamVR overlay's visibility and where a ray from the standing-space source (default 0,1.6,0) hits it.
 // `aim` searches for the ray from the source that lands on overlay uv (u,v) and prints `aim px py pz qw qx qy qz`:
 // a controller pose whose -Z axis points there, in the RAW tracking universe, which is the "world" that
 // driver_framectl's `pose <dev> world` takes. The source is given in standing space (near the user's head) and
 // converted, so the aim stays right after a recenter or with Recline VR (both move standing away from raw).
 // `std` prints the same pose in standing space.
+// `fix <sent: px py pz qw qx qy qz> <target: same>` reads back where SteamVR put the right controller after it was
+// posed at `sent` (raw universe), measures the world transform C applied on top (Recline VR rotates every device pose
+// for lying down), and prints `fix <pose>`: what to send so the controller lands on `target`, plus `away <pose>`,
+// the target turned to face backwards (so its laser leaves the window), also corrected.
 // `ray` casts the laser of the device holding the right-hand role (its -Z axis, pose read back from SteamVR in
 // standing space) and prints `ray uv=u,v` or `ray miss`: what the laser really hits, so frame-ctl can check its aim.
 // frame-ctl uses it to click a flat app's VR window with a virtual controller, which is what makes gamescope give
@@ -18,6 +22,46 @@ using namespace vr;
 
 static VROverlayHandle_t h;
 static float S[3] = {0, 1.6f, 0};
+
+// rigid poses: 3x4 row-major matrices, built from position + quaternion (w x y z)
+struct M34 { double m[3][4]; };
+static M34 fromPQ(const double *v) {
+    double w = v[3], x = v[4], y = v[5], z = v[6], n = 1 / sqrt(w * w + x * x + y * y + z * z);
+    w *= n; x *= n; y *= n; z *= n;
+    return {{{1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y), v[0]},
+             {2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x), v[1]},
+             {2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y), v[2]}}};
+}
+static M34 mul(const M34 &a, const M34 &b) {
+    M34 r{};
+    for (int i = 0; i < 3; i++) for (int j = 0; j < 4; j++) {
+        r.m[i][j] = j == 3 ? a.m[i][3] : 0;
+        for (int k = 0; k < 3; k++) r.m[i][j] += a.m[i][k] * b.m[k][j];
+    }
+    return r;
+}
+static M34 inv(const M34 &a) {
+    M34 r{};
+    for (int i = 0; i < 3; i++) { for (int j = 0; j < 3; j++) r.m[i][j] = a.m[j][i]; r.m[i][3] = 0; }
+    for (int i = 0; i < 3; i++) for (int k = 0; k < 3; k++) r.m[i][3] -= a.m[k][i] * a.m[k][3];
+    return r;
+}
+static void printPQ(const char *tag, const M34 &a) {  // rotation matrix -> quaternion (Shepperd)
+    const double (*m)[4] = a.m; double q[4], t = m[0][0] + m[1][1] + m[2][2];
+    if (t > 0) { double s = 2 * sqrt(t + 1); q[0] = s / 4; q[1] = (m[2][1] - m[1][2]) / s; q[2] = (m[0][2] - m[2][0]) / s; q[3] = (m[1][0] - m[0][1]) / s; }
+    else if (m[0][0] > m[1][1] && m[0][0] > m[2][2]) { double s = 2 * sqrt(1 + m[0][0] - m[1][1] - m[2][2]); q[0] = (m[2][1] - m[1][2]) / s; q[1] = s / 4; q[2] = (m[0][1] + m[1][0]) / s; q[3] = (m[0][2] + m[2][0]) / s; }
+    else if (m[1][1] > m[2][2]) { double s = 2 * sqrt(1 + m[1][1] - m[0][0] - m[2][2]); q[0] = (m[0][2] - m[2][0]) / s; q[1] = (m[0][1] + m[1][0]) / s; q[2] = s / 4; q[3] = (m[1][2] + m[2][1]) / s; }
+    else { double s = 2 * sqrt(1 + m[2][2] - m[0][0] - m[1][1]); q[0] = (m[1][0] - m[0][1]) / s; q[1] = (m[0][2] + m[2][0]) / s; q[2] = (m[1][2] + m[2][1]) / s; q[3] = s / 4; }
+    printf("%s %.4f %.4f %.4f %.5f %.5f %.5f %.5f\n", tag, m[0][3], m[1][3], m[2][3], q[0], q[1], q[2], q[3]);
+}
+// right-hand device: role, or (headset virtual controllers hold role 0) the one whose role hint says right
+static TrackedDeviceIndex_t rightDevice() {
+    TrackedDeviceIndex_t i = VRSystem()->GetTrackedDeviceIndexForControllerRole(TrackedControllerRole_RightHand);
+    for (TrackedDeviceIndex_t d = 0; i >= k_unMaxTrackedDeviceCount && d < k_unMaxTrackedDeviceCount; d++)
+        if (VRSystem()->GetTrackedDeviceClass(d) == TrackedDeviceClass_Controller && VRSystem()->IsTrackedDeviceConnected(d) &&
+            VRSystem()->GetInt32TrackedDeviceProperty(d, Prop_ControllerRoleHint_Int32) == TrackedControllerRole_RightHand) i = d;
+    return i;
+}
 
 static bool castRay(ETrackingUniverseOrigin o, const float src[3], const float dir[3], float uv[2]) {
     VROverlayIntersectionParams_t p{}; VROverlayIntersectionResults_t r{};
@@ -38,16 +82,28 @@ static void aimQuat(const float d[3], float q[4]) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 2) { fprintf(stderr, "usage: ovprobe <overlay-key> [aim <u> <v> [sx sy sz] | ray]\n"); return 2; }
+    if (argc < 2) { fprintf(stderr, "usage: ovprobe <overlay-key> [aim <u> <v> [sx sy sz] | ray | fix <sent 7> <target 7>]\n"); return 2; }
     EVRInitError ie; VR_Init(&ie, VRApplication_Background);
     if (ie != VRInitError_None) { fprintf(stderr, "VR_Init: %s\n", VR_GetVRInitErrorAsEnglishDescription(ie)); return 1; }
     if (VROverlay()->FindOverlay(argv[1], &h) != VROverlayError_None) { fprintf(stderr, "no overlay %s\n", argv[1]); VR_Shutdown(); return 1; }
+    if (argc >= 17 && !strcmp(argv[2], "fix")) {
+        double sv[7], tv[7];
+        for (int k = 0; k < 7; k++) { sv[k] = atof(argv[3 + k]); tv[k] = atof(argv[10 + k]); }
+        TrackedDeviceIndex_t i = rightDevice();
+        TrackedDevicePose_t ps[k_unMaxTrackedDeviceCount];
+        VRSystem()->GetDeviceToAbsoluteTrackingPose(TrackingUniverseRawAndUncalibrated, 0, ps, k_unMaxTrackedDeviceCount);
+        if (i >= k_unMaxTrackedDeviceCount || !ps[i].bPoseIsValid) { printf("fix nodevice\n"); VR_Shutdown(); return 4; }
+        M34 A{}; for (int r = 0; r < 3; r++) for (int c = 0; c < 4; c++) A.m[r][c] = ps[i].mDeviceToAbsoluteTracking.m[r][c];
+        M34 Ci = inv(mul(A, inv(fromPQ(sv))));  // A = C * sent, so C^-1 undoes the extra world transform
+        M34 T = fromPQ(tv), back = T;            // back: T turned 180 deg about its own Y axis
+        for (int r = 0; r < 3; r++) { back.m[r][0] = -T.m[r][0]; back.m[r][2] = -T.m[r][2]; }
+        double ang = acos(fmin(1, fmax(-1, (Ci.m[0][0] + Ci.m[1][1] + Ci.m[2][2] - 1) / 2))) * 180 / M_PI;
+        printf("correction deg=%.2f t=%.3f,%.3f,%.3f\n", ang, Ci.m[0][3], Ci.m[1][3], Ci.m[2][3]);
+        printPQ("fix", mul(Ci, T)); printPQ("away", mul(Ci, back));
+        VR_Shutdown(); return 0;
+    }
     if (argc >= 3 && !strcmp(argv[2], "ray")) {
-        TrackedDeviceIndex_t i = VRSystem()->GetTrackedDeviceIndexForControllerRole(TrackedControllerRole_RightHand);
-        // the headset's virtual controllers may hold no role (role 0); then take the one whose role hint says right
-        for (TrackedDeviceIndex_t d = 0; i >= k_unMaxTrackedDeviceCount && d < k_unMaxTrackedDeviceCount; d++)
-            if (VRSystem()->GetTrackedDeviceClass(d) == TrackedDeviceClass_Controller && VRSystem()->IsTrackedDeviceConnected(d) &&
-                VRSystem()->GetInt32TrackedDeviceProperty(d, Prop_ControllerRoleHint_Int32) == TrackedControllerRole_RightHand) i = d;
+        TrackedDeviceIndex_t i = rightDevice();
         TrackedDevicePose_t ps[k_unMaxTrackedDeviceCount];
         VRSystem()->GetDeviceToAbsoluteTrackingPose(TrackingUniverseStanding, 0, ps, k_unMaxTrackedDeviceCount);
         if (i >= k_unMaxTrackedDeviceCount || !ps[i].bPoseIsValid) {

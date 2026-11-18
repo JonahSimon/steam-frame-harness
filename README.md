@@ -82,8 +82,7 @@ streamed game), fed from the controllers vrlink relays into PC SteamVR. Proven 2
 - **The headset dock eats the input.** While the headset dashboard is open the pad gets nothing; launching a game
   leaves it open. Close it (`frame-ctl hs press right system` toggles it).
 - Proven for a non-Steam shortcut (Proton), a Steam game under Proton and a Linux-native Steam game.
-- **Controllers with no hand role build no pad.** After the headset's VR stack restarts (`agent-awake on` does
-  that), the PC keeps the old relayed controllers with role 0 (`probe/vrprobe`); restart PC SteamVR.
+- **Controllers with no hand role build no pad.** After the headset's VR stack restarts, the PC keeps the old relayed controllers with role 0 (`probe/vrprobe`); restart PC SteamVR.
 - **Launch from the headset**: `frame-ctl stream <appid>` (Steam or shortcut appid). A launch started on the PC
   waits on a prompt that shows nowhere.
 - `tools/padwatch` logs every gamepad device and event on the PC; `tools/frame-ui-shot` screenshots the headset's
@@ -107,10 +106,11 @@ frame-ctl native windows
 
 - The window has to be showing in VR, which needs the headset awake: `frame-ctl worn on`. That holds
   `/proximity` = 1 in the headset's own SteamVR through its driver_framectl and restarts nothing, so it is safe
-  while a game runs there. (The old agent-awake path restarted the headset's SteamVR and killed headset games; it's
-  now only a fallback when the headset driver isn't installed, and it refuses while a headset game runs.)
+  while a game runs there.
 - `native focus` aims with `ovprobe` (pose in the raw tracking universe, which the driver's `world` takes), reads the
-  controller's pose back and casts its laser before clicking, so it never clicks blind. It then despawns the
+  controller's pose back and casts its laser before clicking, so it never clicks blind. If the laser misses, it
+  measures the extra world transform SteamVR applied (Recline VR rotates every device pose while you lie down) and
+  poses the controller with that undone (`ovprobe <key> fix`). It then despawns the
   controllers it spawned (gamescope keeps the focus; spawned controllers hide the real ones). `--keep` leaves them.
   `busy` and `status` name a game running on the headset.
 - The overlay key is `valve.steam.desktopgame.<appid>` (gamescope `--vr-app-overlay-key` + virtual connector key).
@@ -172,14 +172,13 @@ PC: Linux, Steam + SteamVR, the Frame streaming over vrlink, `g++`, `curl`, `pyt
 2. Headset: give it an ssh alias (default `frame`), then `frame/install.sh frame` and `frame/install-driver.sh
    frame`. The second builds driver_framectl inside the headset's SteamVR, which `worn`, `hs` and `native focus`
    use. The first installs the `framectl-dashguard` user unit (see How it works; it also keeps `worn on` in effect
-   across SteamVR restarts there), the legacy keep-awake fallback (`~/bin/agent-awake on|off|status`, a wrapper
-   that fakes the proximity calibration so the idle sensor reads as worn; it restarts the headset's SteamVR), and masks SteamOS's `steam(vr)-web-debug-portforward` units, which otherwise expose Steam's
+   across SteamVR restarts there), removes the old agent-awake keep-awake if present, and masks SteamOS's `steam(vr)-web-debug-portforward` units, which otherwise expose Steam's
    debug port on your LAN. `frame/install.sh frame uninstall` reverts everything.
 3. `frame-ctl vr-restart`, then `frame-ctl doctor`.
 4. Optional Proton logs during runs: symlink `proton/user_settings.py` into your Proton/GE-Proton dir as
    `user_settings.py`. It sets `PROTON_LOG=1` only while a `frame-ctl run` is active.
 
-Config (env): `FRAMECTL_FRAME_HOST` (ssh alias), `FRAMECTL_AWAKE_CMD`, `FRAMECTL_SHOT_WINDOW` (a game desktop
+Config (env): `FRAMECTL_FRAME_HOST` (ssh alias), `FRAMECTL_SHOT_WINDOW` (a game desktop
 window title for `focus`/`shot`; default captures the headset view), `FRAMECTL_FRAME_CEF=host:port` (skip the
 tunnel), `FRAMECTL_LOG_INTERVAL` (seconds between run screenshots, default 60), `FRAMECTL_GAME_LOG_DIRS`,
 `STEAMVR` (SteamVR dir).
