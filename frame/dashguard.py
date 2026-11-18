@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
-"""dashguard.py : headset-side keeper for `frame-ctl dash hide` (blocker B4).
+"""dashguard.py : headset-side keeper for `frame-ctl dash hide` (blocker B4) and `frame-ctl worn on`.
 
 The dash-hide hook lives in the Frame Steam's SharedJSContext, so a Steam restart on the headset drops it and Steam
 re-opens its dashboard, which takes all input from games. While ~/.local/state/framectl/dash-hide exists (frame-ctl
 `dash hide` creates it, `dash allow` and `cleanup` remove it), this checks the hook every 3 s over Steam's local CEF
 debug port and re-installs it, then hides the dashboard, whenever it's missing. Stdlib only (no websocket-client on
 SteamOS). Runs as the user unit framectl-dashguard.service; log: journalctl --user -u framectl-dashguard.
+
+While ~/.local/state/framectl/worn exists (`frame-ctl worn on`), it also keeps the headset's driver_framectl holding
+hmd /proximity = 1, re-setting it after a SteamVR restart there. That keeps the headset's SteamVR out of standby
+(XRService's user presence and Steam's sleep follow it) with nobody wearing it and without restarting anything.
 """
 import base64, json, os, socket, struct, sys, time, urllib.request
 
 FLAG = os.path.expanduser("~/.local/state/framectl/dash-hide")
+WORN = os.path.expanduser("~/.local/state/framectl/worn")
+DRIVER = ("127.0.0.1", 47823)  # driver_framectl in the headset's SteamVR (frame/install-driver.sh)
 CEF = "127.0.0.1:8080"
 # Same hook as frame-ctl's DASH_JS with __noShowMain=true; keep the two in sync.
 HOOK = """(()=>{if(!window.__fcDrop){window.__fcDrop=1;const o=WebSocket.prototype.send;WebSocket.prototype.send=function(d){
@@ -71,11 +77,39 @@ def page(title):
     return next((p["webSocketDebuggerUrl"] for p in pages if title in p["title"]), None)
 
 
+def driver(cmd):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(1)
+    try:
+        s.sendto(cmd.encode(), DRIVER); return s.recv(65535).decode()
+    except OSError:
+        return ""
+    finally:
+        s.close()
+
+
+def keep_worn(state):
+    """Re-set the /proximity override when it's missing (e.g. after the headset's SteamVR restarted)."""
+    rows = [l.split("\t") for l in driver("list").splitlines()]
+    prox = next((r for r in rows if len(r) > 4 and r[0] == "hmd" and r[1] == "/proximity"), None)
+    if prox is None:
+        if state.get("worn") != "nodriver": log("worn: headset driver not answering or no hmd /proximity yet")
+        state["worn"] = "nodriver"; return
+    if (prox[4] == "-" or float(prox[4]) != 1) and os.path.exists(WORN):  # re-check: `worn off` may have just run
+        r = driver("set hmd /proximity 1")
+        log("worn: /proximity override was missing (SteamVR restarted?); set it:", r.strip())
+    state["worn"] = "ok"
+
+
 def main():
-    log("started; flag", FLAG)
+    log("started; flags", FLAG, WORN)
     last = None
+    state = {}
     while True:
         time.sleep(3)
+        if os.path.exists(WORN):
+            keep_worn(state)
+        else:
+            state.pop("worn", None)
         if not os.path.exists(FLAG):
             last = None; continue
         try:

@@ -304,7 +304,8 @@ static std::atomic<bool> spawned{false};
 static std::string cmd(const std::string &line) {
   std::istringstream in(line); std::string op, dev, name; in >> op >> dev >> name;
   std::ostringstream o;
-  if (op == "ping") return "ok framectl 1";
+  // spawned= : virtual controllers present and connected (despawn keeps their components, so `list` can't tell)
+  if (op == "ping") return std::string("ok framectl 1 spawned=") + (spawned && hideReal ? "1" : "0");
   if (op == "list") {
     std::lock_guard<std::mutex> g(mu);
     for (auto &kv : comps) o << label(kv.second.cont) << '\t' << kv.second.name << '\t' << (kv.second.scalar ? "scalar" : "bool")

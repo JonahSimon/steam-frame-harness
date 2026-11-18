@@ -50,13 +50,15 @@ stop)
   timeout 20 $VRCMD --stats > "$d/stats/final.json" 2>&1
   journalctl --user --since "$since" --no-pager > "$d/pc-journal-user.log" 2>&1
   # Frame: Steam/SteamVR logs touched during the run, the newest XRService log (written only at service start),
-  # system and user journal
-  timeout 120 ssh -o ConnectTimeout=5 "$HOST" "cd ~/.local/share/Steam/logs && (find . -maxdepth 1 -type f -newermt '$(date -d "$since" '+%F %T')' -print0; ls -t XRService-*.log 2>/dev/null | head -1 | tr '\\n' '\\0') | tar --null -T - -czf -" \
+  # system and user journal. Times go as @epoch, so a headset in another time zone still gets the right window.
+  timeout 120 ssh -o ConnectTimeout=5 "$HOST" "cd ~/.local/share/Steam/logs && (find . -maxdepth 1 -type f -newermt '$since' -print0; ls -t XRService-*.log 2>/dev/null | head -1 | tr '\\n' '\\0') | tar --null -T - -czf -" \
     > "$d/frame/steam-logs.tgz" 2>"$d/frame/ssh-errors.txt" && tar -xzf "$d/frame/steam-logs.tgz" -C "$d/frame" && rm "$d/frame/steam-logs.tgz"
-  timeout 60 ssh -o ConnectTimeout=5 "$HOST" "journalctl --since '$(date -d "$since" '+%F %T')' --no-pager" > "$d/frame/journal-system.log" 2>&1
-  timeout 60 ssh -o ConnectTimeout=5 "$HOST" "journalctl --user --since '$(date -d "$since" '+%F %T')' --no-pager" > "$d/frame/journal-user.log" 2>&1
+  timeout 60 ssh -o ConnectTimeout=5 "$HOST" "journalctl --since '$since' --no-pager" > "$d/frame/journal-system.log" 2>&1
+  timeout 60 ssh -o ConnectTimeout=5 "$HOST" "journalctl --user --since '$since' --no-pager" > "$d/frame/journal-user.log" 2>&1
   # Proton (PROTON_LOG=1 writes ~/steam-<appid>.log) and game / script-extender logs (F4SE, SKSE, Buffout, MO2)
-  find ~ -maxdepth 1 -name 'steam-*.log' -newer "$d/.start-marker" -exec cp {} "$d/proton/" \;
+  # (a runaway one reached 45 GB in 10 min with WoW, so keep only the last 200 MB of each)
+  find ~ -maxdepth 1 -name 'steam-*.log' -newer "$d/.start-marker" -print0 |
+    while IFS= read -r -d '' f; do tail -c 200M "$f" > "$d/proton/$(basename "$f")"; done
   dirs=${FRAMECTL_GAME_LOG_DIRS:-$(ls -d $STEAM/steamapps/compatdata/*/pfx/drive_c/users/steamuser/Documents/My\ Games ~/Games/*/logs 2>/dev/null | tr '\n' ':')}
   IFS=: read -ra DIRS <<< "$dirs"
   for g in "${DIRS[@]}"; do

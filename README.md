@@ -105,8 +105,14 @@ frame-ctl native shot <appid> out.png  # xwd of the app's largest window (works 
 frame-ctl native windows
 ```
 
-- The window has to be showing in VR, which needs the headset awake. `frame-ctl worn on` restarts the headset's
-  SteamVR (agent-awake), and that kills games already running on the headset, so run it before launching.
+- The window has to be showing in VR, which needs the headset awake: `frame-ctl worn on`. That holds
+  `/proximity` = 1 in the headset's own SteamVR through its driver_framectl and restarts nothing, so it is safe
+  while a game runs there. (The old agent-awake path restarted the headset's SteamVR and killed headset games; it's
+  now only a fallback when the headset driver isn't installed, and it refuses while a headset game runs.)
+- `native focus` aims with `ovprobe` (pose in the raw tracking universe, which the driver's `world` takes), reads the
+  controller's pose back and casts its laser before clicking, so it never clicks blind. It then despawns the
+  controllers it spawned (gamescope keeps the focus; spawned controllers hide the real ones). `--keep` leaves them.
+  `busy` and `status` name a game running on the headset.
 - The overlay key is `valve.steam.desktopgame.<appid>` (gamescope `--vr-app-overlay-key` + virtual connector key).
 - `ffmpeg x11grab` of the display root shows only a cursor under gamescope; capture windows with `xwd -id`.
 - `frame-ei` chains commands: `frame-ei click 100 200 -- type hi -- key enter`.
@@ -125,6 +131,14 @@ frame-ctl native windows
 - **`probe/vrprobe`**: independent OpenVR client for checks (poses, activity, dashboard state, controller state;
   `vrprobe scene 3` takes scene focus to read legacy input).
 - **`frame/`**: headset-side pieces and `frame/install.sh`.
+
+### Keeping the headset awake unworn (`worn`)
+
+With nobody in it the headset's SteamVR goes to standby within seconds (activity level 3), and XRService's user
+presence and Steam's sleep follow that state. `worn on` overrides the HMD's `/proximity` input to 1 in the
+headset's own vrserver (driver_framectl there) and in the PC's: standby -> active within 5 s, no restart. While
+`~/.local/state/framectl/worn` exists on the headset, `framectl-dashguard` re-sets the override after a SteamVR
+restart there. `worn off` (and `cleanup`) clears it, so the headset sleeps normally again.
 
 ### The dashboard problem (why games got no input)
 
@@ -155,9 +169,11 @@ PC: Linux, Steam + SteamVR, the Frame streaming over vrlink, `g++`, `curl`, `pyt
 
 1. `./build.sh install`: fetches pinned OpenVR headers (v2.15.6), builds, registers the driver with
    `vrpathreg`, links `frame-ctl` into `~/.local/bin`, turns on SteamVR's VR View mirror window.
-2. Headset: give it an ssh alias (default `frame`), then `frame/install.sh frame`. That installs the keep-awake
-   toggle (`~/bin/agent-awake on|off|status`, a wrapper that fakes the proximity calibration so the idle sensor
-   reads as worn), the `framectl-dashguard` user unit (see How it works), and masks SteamOS's `steam(vr)-web-debug-portforward` units, which otherwise expose Steam's
+2. Headset: give it an ssh alias (default `frame`), then `frame/install.sh frame` and `frame/install-driver.sh
+   frame`. The second builds driver_framectl inside the headset's SteamVR, which `worn`, `hs` and `native focus`
+   use. The first installs the `framectl-dashguard` user unit (see How it works; it also keeps `worn on` in effect
+   across SteamVR restarts there), the legacy keep-awake fallback (`~/bin/agent-awake on|off|status`, a wrapper
+   that fakes the proximity calibration so the idle sensor reads as worn; it restarts the headset's SteamVR), and masks SteamOS's `steam(vr)-web-debug-portforward` units, which otherwise expose Steam's
    debug port on your LAN. `frame/install.sh frame uninstall` reverts everything.
 3. `frame-ctl vr-restart`, then `frame-ctl doctor`.
 4. Optional Proton logs during runs: symlink `proton/user_settings.py` into your Proton/GE-Proton dir as
@@ -193,7 +209,7 @@ Commands: `press|hold|release <hand> <btn>`, `trigger|grip <hand> <0..1|off>`, `
 `qw qx qy qz`), `worn on|off`, `wake`, `dash hide|allow|status`, `shot [file] [window|vrview]`, `focus [window]`,
 `fingers <hand> t i m r p|off`, `spawn|despawn`, `clear`, `bindings [app]`, `busy [gameid]`, `watch`, `doctor`, `cleanup [--keep-vr] [--keep-awake]`, `status`, `run start|stop|note`, `raw <line>`.
 
-Driver protocol (UDP, one line in, text out): `ping`, `list`, `poses`, `set <dev> <component> <value>`,
+Driver protocol (UDP, one line in, text out): `ping` (`ok framectl 1 spawned=0|1`), `list`, `poses`, `set <dev> <component> <value>`,
 `rel <dev|all> <component|all>`, `pose ...`, `spawn`, `despawn`, `nodash on|off`, `dash close`, `clear`.
 
 ## Run folders
@@ -216,6 +232,8 @@ With SteamVR up and the headset streaming: `tests/driver.sh`, `tests/input.sh` (
 `frame-ctl run start` records who started the run (the agent's session id, or `FRAMECTL_OWNER`). While that run's
 collector is alive, every state-changing command from anyone else refuses and `frame-ctl busy` names the run;
 read-only ones (`status`, `shot`, `bindings`, `doctor`, `busy`, `watch`) still work. `FRAMECTL_FORCE=1` overrides.
+`busy` (and so `launch`/`vr-restart`) also counts a game running on the headset itself (any process there with a
+`SteamGameId` other than SteamVR's). `doctor` exits 1 when any check fails.
 
 ## Gotchas
 

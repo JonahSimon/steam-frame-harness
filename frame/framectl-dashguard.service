@@ -1,5 +1,5 @@
 [Unit]
-Description=frame-ctl: keep the dash-hide hook in the headset's Steam while ~/.local/state/framectl/dash-hide exists
+Description=frame-ctl: keep the dash-hide hook (dash-hide flag) and the worn /proximity override (worn flag) in place on the headset
 
 [Service]
 ExecStart=/usr/bin/python3 -u %h/bin/framectl-dashguard

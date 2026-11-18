@@ -54,6 +54,11 @@ KEYS = {"esc": 1, "minus": 12, "equal": 13, "backspace": 14, "tab": 15, "enter":
         "f4": 62, "f5": 63, "f6": 64, "f7": 65, "f8": 66, "f9": 67, "f10": 68, "f11": 87, "f12": 88,
         "leftbrace": 26, "rightbrace": 27, "home": 102, "up": 103, "pageup": 104, "left": 105, "right": 106,
         "end": 107, "down": 108, "pagedown": 109, "insert": 110, "delete": 111, "leftmeta": 125}
+KEYS.update({"capslock": 58, "rightctrl": 97, "rightalt": 100, "rightmeta": 126, "sysrq": 99, "pause": 119,
+             "numlock": 69, "scrolllock": 70})
+ALIAS = {"return": "enter", "escape": "esc", "ctrl": "leftctrl", "shift": "leftshift", "alt": "leftalt",
+         "super": "leftmeta", "meta": "leftmeta", "win": "leftmeta", "del": "delete", "pgup": "pageup",
+         "pgdn": "pagedown", "period": "dot", "printscreen": "sysrq", "bksp": "backspace"}
 for i, c in enumerate("1234567890"): KEYS[c] = 2 + i
 for row, start in (("qwertyuiop", 16), ("asdfghjkl", 30), ("zxcvbnm", 44)):
     for i, c in enumerate(row): KEYS[c] = start + i
@@ -103,6 +108,10 @@ def regions():
 def move(x, y): emit(need(CAP_PTR_ABS, "absolute pointer"), motion_abs, float(x), float(y))
 
 def press(names):
+    names = [ALIAS.get(n, n) for n in names]
+    bad = [n for n in names if n not in KEYS]
+    if bad: sys.exit(f"frame-ei: unknown key {', '.join(map(repr, bad))} (evdev names without KEY_, e.g. enter, "
+                     "leftctrl, f5; ASCII text only for type)")
     d = need(CAP_KBD, "keyboard"); codes = [KEYS[n] for n in names]
     for c in codes: emit(d, key_ev, c, True)
     for c in reversed(codes): emit(d, key_ev, c, False)

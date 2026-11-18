@@ -2,8 +2,9 @@
 # frame/install.sh [ssh-host] [uninstall] : install the headset-side pieces over ssh (default host: frame).
 # Needs: SteamOS on the Frame, ssh access as user steamos, passwordless sudo (or run the printed steps by hand).
 # Installs /var/lib/agent-noprox (eeprom_console wrapper + saved real binary + prox_far value), agent-noprox.service
-# (disabled; `agent-awake on` enables it), ~/bin/agent-awake, and the user unit framectl-dashguard (re-installs the
-# dash-hide hook after a Steam restart on the headset; idle unless frame-ctl dash hide is in effect). /etc and /var persist across SteamOS updates.
+# (disabled; `agent-awake on` enables it; legacy keep-awake, `frame-ctl worn` uses the headset driver instead),
+# ~/bin/agent-awake, and the user unit framectl-dashguard (re-installs the dash-hide hook after a Steam restart on the
+# headset and re-holds /proximity while `frame-ctl worn on` is in effect; idle otherwise). /etc and /var persist across SteamOS updates.
 # Also masks SteamOS's steam(vr)-web-debug-portforward units, which expose Steam's CEF debug port on the LAN;
 # frame-cef reaches it through an ssh tunnel instead.
 set -eu
@@ -24,7 +25,8 @@ ssh "$H" 'set -e
   install -m755 /tmp/fh/agent-awake ~/bin/agent-awake
   install -m755 /tmp/fh/dashguard.py ~/bin/framectl-dashguard
   install -Dm644 /tmp/fh/framectl-dashguard.service ~/.config/systemd/user/framectl-dashguard.service
-  systemctl --user daemon-reload; systemctl --user enable --now framectl-dashguard
+  systemctl --user daemon-reload; systemctl --user enable framectl-dashguard
+  systemctl --user restart framectl-dashguard  # enable --now would leave an old copy running
   sudo systemctl daemon-reload
   sudo systemctl mask --now steam-web-debug-portforward.service steamvr-web-debug-portforward.service
-  rm -rf /tmp/fh; echo "installed; run: ssh '"$H"' ~/bin/agent-awake on"'
+  rm -rf /tmp/fh; echo "installed; for frame-ctl worn/hs/native also run frame/install-driver.sh '"$H"'"'
