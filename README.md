@@ -90,6 +90,27 @@ streamed game), fed from the controllers vrlink relays into PC SteamVR. Proven 2
   own Steam UI (VR View never shows it).
 - `frame-ctl cleanup` also clears and despawns the headset-side driver: its virtual controllers hide the real ones.
 
+## Headset-native flat apps
+
+For games installed on the Frame itself (Proton or Lepton, rendered by the headset's gamescope), not streamed from
+the PC. In VR mode gamescope only sends mouse and keyboard to the overlay a controller laser last clicked, so with
+nobody holding a controller every injected event is dropped (XTest included: Xwayland 24 routes it through libei).
+
+```
+frame-ctl native setup                 # once: copies tools/frame-ei, builds frame/ovprobe on the headset
+frame-ctl native focus <appid>         # virtual-controller laser click on the window's left edge -> input focus
+frame-ctl native click 115 297         # libei input; x/y are pixels inside the focused window
+frame-ctl native type 'hello' ; frame-ctl native key enter ; frame-ctl native key leftctrl+a
+frame-ctl native shot <appid> out.png  # xwd of the app's largest window (works unworn)
+frame-ctl native windows
+```
+
+- The window has to be showing in VR, which needs the headset awake. `frame-ctl worn on` restarts the headset's
+  SteamVR (agent-awake), and that kills games already running on the headset, so run it before launching.
+- The overlay key is `valve.steam.desktopgame.<appid>` (gamescope `--vr-app-overlay-key` + virtual connector key).
+- `ffmpeg x11grab` of the display root shows only a cursor under gamescope; capture windows with `xwd -id`.
+- `frame-ei` chains commands: `frame-ei click 100 200 -- type hi -- key enter`.
+
 ## How it works
 
 - **`driver_framectl`** (`driver/framectl.cpp`) is a SteamVR driver loaded next to vrlink. It patches the vtables

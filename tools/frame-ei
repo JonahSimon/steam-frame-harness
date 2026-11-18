@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+"""frame-ei: mouse/keyboard input into the Frame's flat (gamescope) apps through gamescope's libei socket.
+Runs ON the headset (frame-ctl `ei` copies and runs it over ssh). XTest does not work there: Xwayland 24
+routes XTest through libei, so this talks to $LIBEI_SOCKET (gamescope-0-ei) directly.
+
+  frame-ei regions                 print the absolute-pointer regions (coordinate space for move/click)
+  frame-ei move  <x> <y>
+  frame-ei click <x> <y> [left|right|middle] [count]
+  frame-ei key   <name>[+<name>...]   evdev names without KEY_, e.g. enter, tab, esc, leftctrl+a
+  frame-ei type  <text>              US layout, ASCII only
+  frame-ei scroll <dy>               discrete wheel clicks (+ = down)
+Several commands chain with ' -- ', e.g. `click 100 200 -- type hello -- key enter`.
+"""
+import ctypes as C, os, select, sys, time
+
+os.environ.setdefault("LIBEI_SOCKET", "gamescope-0-ei")
+os.environ.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+ei_lib = C.CDLL("libei.so.1")
+P, U32, I32, DBL, U64, B = C.c_void_p, C.c_uint32, C.c_int32, C.c_double, C.c_uint64, C.c_bool
+def fn(name, res, *args):
+    f = getattr(ei_lib, name); f.restype = res; f.argtypes = list(args); return f
+ei_new_sender = fn("ei_new_sender", P, P)
+ei_configure_name = fn("ei_configure_name", None, P, C.c_char_p)
+ei_setup_backend_socket = fn("ei_setup_backend_socket", C.c_int, P, C.c_char_p)
+ei_get_fd = fn("ei_get_fd", C.c_int, P)
+ei_dispatch = fn("ei_dispatch", None, P)
+ei_get_event = fn("ei_get_event", P, P)
+ei_now = fn("ei_now", U64, P)
+ev_type = fn("ei_event_get_type", C.c_int, P)
+ev_seat = fn("ei_event_get_seat", P, P)
+ev_device = fn("ei_event_get_device", P, P)
+ev_unref = fn("ei_event_unref", P, P)
+seat_bind = fn("ei_seat_bind_capabilities", None, P, U32, U32, U32, U32, U32, P)
+dev_ref = fn("ei_device_ref", P, P)
+dev_has = fn("ei_device_has_capability", B, P, U32)
+dev_region = fn("ei_device_get_region", P, P, C.c_size_t)
+reg_x, reg_y = fn("ei_region_get_x", U32, P), fn("ei_region_get_y", U32, P)
+reg_w, reg_h = fn("ei_region_get_width", U32, P), fn("ei_region_get_height", U32, P)
+start_emu = fn("ei_device_start_emulating", None, P, U32)
+stop_emu = fn("ei_device_stop_emulating", None, P)
+dev_frame = fn("ei_device_frame", None, P, U64)
+motion_abs = fn("ei_device_pointer_motion_absolute", None, P, DBL, DBL)
+button = fn("ei_device_button_button", None, P, U32, B)
+key_ev = fn("ei_device_keyboard_key", None, P, U32, B)
+scroll_disc = fn("ei_device_scroll_discrete", None, P, I32, I32)
+
+CAP_PTR_ABS, CAP_KBD, CAP_SCROLL, CAP_BUTTON = 1 << 1, 1 << 2, 1 << 4, 1 << 5
+EV_DISCONNECT, EV_SEAT_ADDED, EV_DEVICE_RESUMED = 2, 3, 8
+BTN = {"left": 0x110, "right": 0x111, "middle": 0x112}
+# evdev keycodes (linux/input-event-codes.h)
+KEYS = {"esc": 1, "minus": 12, "equal": 13, "backspace": 14, "tab": 15, "enter": 28, "leftctrl": 29,
+        "semicolon": 39, "apostrophe": 40, "grave": 41, "leftshift": 42, "backslash": 43, "comma": 51,
+        "dot": 52, "slash": 53, "rightshift": 54, "leftalt": 56, "space": 57, "f1": 59, "f2": 60, "f3": 61,
+        "f4": 62, "f5": 63, "f6": 64, "f7": 65, "f8": 66, "f9": 67, "f10": 68, "f11": 87, "f12": 88,
+        "leftbrace": 26, "rightbrace": 27, "home": 102, "up": 103, "pageup": 104, "left": 105, "right": 106,
+        "end": 107, "down": 108, "pagedown": 109, "insert": 110, "delete": 111, "leftmeta": 125}
+for i, c in enumerate("1234567890"): KEYS[c] = 2 + i
+for row, start in (("qwertyuiop", 16), ("asdfghjkl", 30), ("zxcvbnm", 44)):
+    for i, c in enumerate(row): KEYS[c] = start + i
+PUNCT = {"-": "minus", "=": "equal", "[": "leftbrace", "]": "rightbrace", ";": "semicolon", "'": "apostrophe",
+         "`": "grave", "\\": "backslash", ",": "comma", ".": "dot", "/": "slash", " ": "space", "\n": "enter",
+         "\t": "tab"}
+SHIFTED = dict(zip('!@#$%^&*()_+{}:"~|<>?', "1234567890-=[];'`\\,./"))
+
+ei = ei_new_sender(None)
+ei_configure_name(ei, b"frame-ei")
+if ei_setup_backend_socket(ei, None) != 0:
+    sys.exit(f"frame-ei: cannot connect to {os.environ['LIBEI_SOCKET']}")
+fd = ei_get_fd(ei)
+devs, seq = {}, [1]
+
+def pump(timeout=0.05):
+    select.select([fd], [], [], timeout)
+    ei_dispatch(ei)
+    while (e := ei_get_event(ei)):
+        t = ev_type(e)
+        if t == EV_SEAT_ADDED:
+            seat_bind(ev_seat(e), CAP_PTR_ABS, CAP_BUTTON, CAP_KBD, CAP_SCROLL, 0, None)
+        elif t == EV_DEVICE_RESUMED:
+            d = ev_device(e)
+            for cap in (CAP_PTR_ABS, CAP_KBD, CAP_SCROLL, CAP_BUTTON):
+                if dev_has(d, cap) and cap not in devs:
+                    devs[cap] = dev_ref(d); start_emu(d, seq[0]); seq[0] += 1
+        elif t == EV_DISCONNECT:
+            sys.exit("frame-ei: disconnected by gamescope")
+        ev_unref(e)
+
+def need(cap, what):
+    end = time.time() + 3
+    while cap not in devs and time.time() < end: pump()
+    if cap not in devs: sys.exit(f"frame-ei: gamescope offered no {what} device")
+    return devs[cap]
+
+def emit(d, f, *a):
+    f(d, *a); dev_frame(d, ei_now(ei)); ei_dispatch(ei); time.sleep(0.02)
+
+def regions():
+    d = need(CAP_PTR_ABS, "absolute pointer"); out, i = [], 0
+    while (r := dev_region(d, i)):
+        out.append((reg_x(r), reg_y(r), reg_w(r), reg_h(r))); i += 1
+    return out
+
+def move(x, y): emit(need(CAP_PTR_ABS, "absolute pointer"), motion_abs, float(x), float(y))
+
+def press(names):
+    d = need(CAP_KBD, "keyboard"); codes = [KEYS[n] for n in names]
+    for c in codes: emit(d, key_ev, c, True)
+    for c in reversed(codes): emit(d, key_ev, c, False)
+
+def run(cmd):
+    op, a = cmd[0], cmd[1:]
+    if op == "regions": print(regions())
+    elif op == "move": move(*a[:2])
+    elif op == "click":
+        move(*a[:2]); time.sleep(0.05)
+        b = BTN[a[2] if len(a) > 2 else "left"]; d = need(CAP_BUTTON, "button")
+        for _ in range(int(a[3]) if len(a) > 3 else 1):
+            emit(d, button, b, True); time.sleep(0.05); emit(d, button, b, False); time.sleep(0.05)
+    elif op == "key": press(a[0].lower().split("+"))
+    elif op == "type":
+        for ch in " ".join(a):
+            if ch.isupper(): press(["leftshift", ch.lower()])
+            elif ch in SHIFTED: press(["leftshift", PUNCT.get(SHIFTED[ch], SHIFTED[ch])])
+            else: press([PUNCT.get(ch, ch)])
+    elif op == "scroll": emit(need(CAP_SCROLL, "scroll"), scroll_disc, 0, int(a[0]) * 120)
+    else: sys.exit(__doc__)
+
+if __name__ == "__main__":
+    argv = sys.argv[1:]
+    if not argv or argv[0] in ("-h", "--help"): sys.exit(__doc__)
+    cmds, cur = [], []
+    for w in argv:
+        if w == "--": cmds.append(cur); cur = []
+        else: cur.append(w)
+    cmds.append(cur)
+    for c in cmds: run(c)
+    pump(0.1)
+    for d in set(devs.values()): stop_emu(d)
+    ei_dispatch(ei)

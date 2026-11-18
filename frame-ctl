@@ -26,6 +26,13 @@
   watch                          live log of real headset button changes, injected input and game haptics
   cleanup [--keep-vr] [--keep-awake]  hand the setup back: stop run, quit games, clear overrides, despawn,
                                  let the headset dashboard work again, let the headset sleep, quit SteamVR
+  native <cmd> ...                headset-native flat apps (Proton/Lepton games running ON the Frame, in its gamescope):
+           setup                 copy tools/frame-ei + build frame/ovprobe on the headset (once, and after edits)
+           focus <appid>         give the app's VR window input focus (virtual-controller laser click on its edge)
+           click <x> <y> [btn] [n] | move <x> <y> | key <a+b> | type <text> | scroll <dy>
+                                 libei input into the focused app; x/y are pixels in the app's focused window
+           shot  <appid|title> [out.png]   capture the app's largest X window (xwd; works unworn)
+           windows               list app windows on the headset's Xwayland displays
   busy   [gameid]                exit 0 + reason if the headset is in use (another Steam game running, or a
                                  vr-restart in progress); scripts call this before touching SteamVR
   doctor                         check tools, driver, SteamVR build, VR View, headset ssh, CEF tunnel, input focus
@@ -678,13 +685,90 @@ def run_cmd(args):
         sys.exit("usage: frame-ctl run start <label> | stop | note <text>")
 
 
+# ---- headset-native flat apps ----
+# Games installed ON the Frame (Proton/Lepton) render in the headset's gamescope, which in VR mode routes mouse and
+# keyboard only to the overlay a controller laser last clicked. With nobody holding a controller nothing has focus
+# and every injected event (XTest or libei) is dropped. `native focus` clicks the window's left edge with a
+# headset-side virtual controller (ovprobe solves the aim), after which libei input (frame-ei) reaches the app.
+NATIVE_KEY = "valve.steam.desktopgame.{}"  # gamescope --vr-app-overlay-key + virtual connector key (= appid)
+
+
+def hssh(cmd, **kw):
+    return sh(f"ssh -o ConnectTimeout=5 {HOST} {shlex.quote(cmd)}", **kw)
+
+
+def native(r):
+    if not r: sys.exit(__doc__)
+    op, a = r[0], r[1:]
+    if op == "setup":
+        src = os.path.join(HERE, "frame", "ovprobe")
+        hdr = os.path.join(HERE, "third_party", "openvr-v2.15.6", "openvr.h")
+        print(sh(f"ssh {HOST} 'mkdir -p ~/.local/bin ~/framectl-src/ovprobe' && "
+                 f"scp -q {HERE}/tools/frame-ei {HOST}:.local/bin/frame-ei && "
+                 f"scp -q {src}/ovprobe.cpp {hdr} {HOST}:framectl-src/ovprobe/ && "
+                 f"ssh {HOST} 'cd ~/framectl-src/ovprobe && g++ -O1 -std=c++17 ovprobe.cpp -o ~/.local/bin/ovprobe "
+                 f"-L/opt/steamvr/bin/linuxarm64 -lopenvr_api -Wl,-rpath,/opt/steamvr/bin/linuxarm64 && echo setup ok'"
+                 ).stdout.strip() or "setup failed")
+    elif op == "focus":
+        global HS
+        key = NATIVE_KEY.format(a[0])
+        res = hssh(f"~/.local/bin/ovprobe {key} aim 0.01 0.5 0.1 1.4 -0.3")
+        aim = next((l.split()[1:] for l in res.stdout.splitlines() if l.startswith("aim ")), None)
+        if not aim:
+            sys.exit(f"frame-ctl: can't aim at {key}: {(res.stdout + res.stderr).strip()[-300:]}\n"
+                     "(window not shown in VR? the headset must be awake: `frame-ctl worn on` restarts the "
+                     "headset's SteamVR, which kills running headset games, so do it before launching)")
+        HS = True
+        send("spawn")
+        for _ in range(20):  # a fresh spawn (e.g. after a SteamVR restart) takes a few seconds to appear
+            r = send("pose right world " + " ".join(aim))
+            if not r.startswith("err no device"): break
+            time.sleep(0.5)
+        ok(r)
+        time.sleep(0.5)
+        for v in ("1", "0"):
+            ok(send(f"set right /input/trigger/value {v}")); ok(send(f"set right /input/trigger/click {v}"))
+            time.sleep(0.15)
+        # point it away so the laser stops driving the cursor; keyboard focus stays and the mouse follows it
+        ok(send("pose right world " + " ".join(aim[:3]) + " 0 0 1 0"))
+        timeline("native focus " + a[0], "ok")
+    elif op in ("click", "move", "key", "type", "scroll"):
+        res = hssh("~/.local/bin/frame-ei " + " ".join(shlex.quote(x) for x in r))
+        timeline("native " + " ".join(r), (res.stdout + res.stderr).strip()[:80] or "ok")
+        if res.returncode: sys.exit((res.stdout + res.stderr).strip())
+    elif op == "windows":
+        print(hssh("for d in /tmp/.X11-unix/X*; do n=:${d##*X}; DISPLAY=$n xwininfo -root -tree 2>/dev/null | "
+                   "grep -E '\"steam_app_' | grep -v 'Default IME' | sed \"s|^|$n |\"; done").stdout.rstrip())
+    elif op == "shot":
+        pat = f"steam_app_{a[0]}" if a[0].isdigit() else a[0]
+        out = a[1] if len(a) > 1 else os.path.join(run_dir() or "/tmp", f"native-{time.strftime('%H%M%S')}.png")
+        res = hssh("for d in /tmp/.X11-unix/X*; do n=:${d##*X}; DISPLAY=$n xwininfo -root -tree 2>/dev/null | "
+                   f"grep -F {shlex.quote(pat)} | grep -v 'Default IME' | sed \"s|^|$n |\"; done | "
+                   "awk '{split($0,g,\"  \"); for(i in g) if (g[i] ~ /^[0-9]+x[0-9]+\\+/) {split(g[i],wh,\"[x+]\"); "
+                   "print wh[1]*wh[2], $1, $2}}' | sort -rn | head -1 | "
+                   "{ read area disp id; [ -n \"$id\" ] && DISPLAY=$disp xwd -id $id -silent > /tmp/native-shot.xwd && "
+                   "ffmpeg -loglevel error -y -i /tmp/native-shot.xwd /tmp/native-shot.png && echo ok; }")
+        if "ok" not in res.stdout:
+            # xwd can't read Vulkan/D3D swapchain windows (BadMatch); gamescope's own screenshot of the focused
+            # app can. ponytail: captures whatever app gamescope shows, not necessarily the one asked for.
+            res = hssh("rm -f /tmp/native-shot.png; XDG_RUNTIME_DIR=/run/user/$(id -u) gamescopectl screenshot "
+                       "/tmp/native-shot.png >/dev/null 2>&1; for i in 1 2 3 4 5 6 7 8 9 10; do "
+                       "[ -s /tmp/native-shot.png ] && { sleep 0.5; echo ok; break; }; sleep 0.5; done")
+        if "ok" not in res.stdout: sys.exit(f"frame-ctl: no window matching {pat} on the headset")
+        sh(f"scp -q {HOST}:/tmp/native-shot.png {shlex.quote(out)}")
+        print(out)
+    else:
+        sys.exit(__doc__)
+
+
 def main(a):
     if not a or a[0] in ("-h", "--help", "help"):
         print(__doc__); return
     c, r = a[0], a[1:]
     readonly = c in ("status", "shot", "bindings", "watch", "doctor", "busy") or (c == "run" and r[:1] == ["note"]) \
         or (c == "raw" and r[:1] in (["ping"], ["list"], ["poses"])) or (c == "hs" and r[:1] == ["list"]) \
-        or (c == "dash" and r[:1] in ([], ["status"]))
+        or (c == "dash" and r[:1] in ([], ["status"])) \
+        or (c == "native" and r[:1] in (["shot"], ["windows"], ["setup"]))
     if not readonly and not (c == "run" and r[:1] == ["start"]):  # run start has its own check
         guard(" ".join(a[:2]))
     if c == "hs":
@@ -745,6 +829,7 @@ def main(a):
         r = busy_reason(r[0] if r else None)
         print(r or "free"); sys.exit(0 if r else 1)
     elif c == "cleanup": cleanup("--keep-vr" in r, "--keep-awake" in r)
+    elif c == "native": native(r)
     elif c == "raw": print(send(" ".join(r)).rstrip())
     else: sys.exit(f"frame-ctl: unknown command {c}\n{__doc__}")
 
