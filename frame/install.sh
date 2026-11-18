@@ -12,7 +12,7 @@ if [ "${2:-}" = uninstall ]; then
   ssh "$H" 'sudo systemctl disable --now agent-noprox 2>/dev/null; sudo rm -f /etc/systemd/system/agent-noprox.service; sudo rm -rf /var/lib/agent-noprox; rm -f ~/bin/agent-awake; systemctl --user disable --now framectl-dashguard 2>/dev/null; rm -f ~/bin/framectl-dashguard ~/.config/systemd/user/framectl-dashguard.service ~/.local/state/framectl/dash-hide; sudo systemctl daemon-reload; sudo systemctl unmask steam-web-debug-portforward.service steamvr-web-debug-portforward.service; echo uninstalled'
   exit
 fi
-ssh "$H" 'mkdir -p ~/bin /tmp/fh && sudo -n true' || { echo "need passwordless sudo on $H (e.g. /etc/sudoers.d/zz-agents)"; exit 1; }
+ssh "$H" 'mkdir -p ~/bin /tmp/fh && sudo -n true' || { echo "need passwordless sudo on $H (a NOPASSWD drop-in in /etc/sudoers.d)"; exit 1; }
 scp -q dashguard.py framectl-dashguard.service "$H":/tmp/fh/
 ssh "$H" 'set -e
   if [ -e /etc/systemd/system/agent-noprox.service ]; then  # legacy agent-awake: unmount the wrapper, then remove it

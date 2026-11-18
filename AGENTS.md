@@ -18,3 +18,6 @@ Working on the code:
 - `driver/framectl.cpp` patches SteamVR driver vtables. The dashboard hooks are tied to one SteamVR build (see
   README); verify on the new build before widening the version gate.
 - Keep machine-specific values in env vars (`FRAMECTL_*`), never hardcoded.
+- `main` is the general, published harness. Scripts for one game, mod list, network or headset (and anything
+  naming them) don't belong on it: keep them outside the repo or on an unpushed local branch, following
+  `docs/writing-tests.md`. Commit general fixes on `main`; a local branch picks them up with `git merge main`.

@@ -4,7 +4,7 @@
 SteamVR's Frame remap table spreads the left upper face button of Touch/Index/Pico bindings over dpad left, right and
 up, right next to dpad down (the lower button). A slightly sideways press on down then fires both (Boneworks/Bonelab:
 slow-mo also opens the menu). This keeps dpad up only, for every game SteamVR auto-converts. SteamVR updates restore
-the file; steamvr-update-watch reruns this. Backup: <file>.bak-dpad. Restart SteamVR to apply.
+the file, so rerun this after each update (--check exits 1 when needed). Backup: <file>.bak-dpad. Restart SteamVR to apply.
 """
 import json, os, shutil, sys
 

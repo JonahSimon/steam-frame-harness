@@ -65,8 +65,8 @@ for each convertible one.
 
 SteamVR's own Touch/Index -> Frame table maps the left upper face button (usually the game menu) to dpad left, right
 and up, next to dpad down, so sideways presses on down fire both. `tools/frame-dpad-fix` trims it to dpad up for every
-auto-converted game (OpenXR ones like Bonelab included; restart SteamVR after). SteamVR updates restore the table;
-the `steamvr-update-watch` hook reruns it. `frame-binding` applies the same rule.
+auto-converted game (OpenXR ones like Bonelab included; restart SteamVR after). SteamVR updates restore the table, so rerun it
+after each update (`--check` exits 1 when it needs to). `frame-binding` applies the same rule.
 
 ## Flat (non-VR) games
 
@@ -261,8 +261,7 @@ read-only ones (`status`, `shot`, `bindings`, `doctor`, `busy`, `watch`) still w
 
 ## Overhead
 
-Measured 2026-10-31 with `probe/vrprobe timing` (per-frame compositor GPU time), Fallout 4 VR (Gingas, HD
-profile), fixed head pose in one interior, RX 6900 XT, 40 to 60 s per condition:
+Measured 2026-10-31 with `probe/vrprobe timing` (per-frame compositor GPU time), Fallout 4 VR (large mod list), fixed head pose in one interior, RX 6900 XT, 40 to 60 s per condition:
 
 | Condition | median ms | mean ms | p95 ms |
 |---|---|---|---|
@@ -285,7 +284,8 @@ depends on the headset's Steam JS and may break with a SteamOS update.
 
 Clone: `git clone https://github.com/JonahSimon/steam-frame-harness`
 
-`driver/` SteamVR driver, `probe/` OpenVR probe, `frame/` headset-side scripts, `tests/`, `frame-ctl`,
-`frame-ctl-logs`, `frame-cef`, `proton/` run-scoped Proton logging, `skills/frame-ctl/` agent skill.
+`driver/` SteamVR driver, `probe/` OpenVR probe, `frame/` headset-side scripts, `tests/`, `tools/`, `frame-ctl`,
+`frame-ctl-logs`, `frame-cef`, `proton/` run-scoped Proton logging, `skills/frame-ctl/` agent skill,
+`docs/writing-tests.md` how to write a test script for your own game (kept out of this repo).
 
 License: MIT.

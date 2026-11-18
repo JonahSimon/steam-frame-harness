@@ -15,7 +15,7 @@ The repo README has the details. This is the loop.
 2. **One agent per headset.** Run `frame-ctl busy` first. If it names another agent's run or a game you didn't
    start, stop and report. While another agent's run is active, every state-changing frame-ctl command refuses
    (runs record their owner's session). Don't set FRAMECTL_FORCE to get past it: a `vr-restart` kills their game.
-   `launch` warns when RAM is short (< 8 GB available); then free memory (`vr-prep on`) and run no parallel agents.
+   `launch` warns when RAM is short (< 8 GB available); then free memory (close other big apps) and run no parallel agents.
 
 ## Test
 
@@ -39,7 +39,8 @@ The repo README has the details. This is the loop.
    every line says `ok`. Use `--keep-vr` / `--keep-awake` only if the person asked you to leave it running for
    them. Never end a session with a game, SteamVR or the keep-awake override still running.
 
-Your own test scripts: call `frame-ctl busy <gameid>` before touching SteamVR and stop if it prints a reason.
+Your own test scripts: see `docs/writing-tests.md`. Call `frame-ctl busy <gameid>` before touching SteamVR and
+stop if it prints a reason.
 
 Bethesda VR games (Skyrim VR, Fallout 4 VR): `frame-ctl console "<window title>" "<command>"` types a console
 command (one key at a time, lowercased); e.g. `frame-ctl console "Fallout4VR" "player.additem 21b3b 1"`.

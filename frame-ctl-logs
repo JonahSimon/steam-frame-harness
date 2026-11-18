@@ -56,7 +56,7 @@ stop)
   timeout 60 ssh -o ConnectTimeout=5 "$HOST" "journalctl --since '$since' --no-pager" > "$d/frame/journal-system.log" 2>&1
   timeout 60 ssh -o ConnectTimeout=5 "$HOST" "journalctl --user --since '$since' --no-pager" > "$d/frame/journal-user.log" 2>&1
   # Proton (PROTON_LOG=1 writes ~/steam-<appid>.log) and game / script-extender logs (F4SE, SKSE, Buffout, MO2)
-  # (a runaway one reached 45 GB in 10 min with WoW, so keep only the last 200 MB of each)
+  # (a runaway one reached 45 GB in 10 min with one game, so keep only the last 200 MB of each)
   find ~ -maxdepth 1 -name 'steam-*.log' -newer "$d/.start-marker" -print0 |
     while IFS= read -r -d '' f; do tail -c 200M "$f" > "$d/proton/$(basename "$f")"; done
   dirs=${FRAMECTL_GAME_LOG_DIRS:-$(ls -d $STEAM/steamapps/compatdata/*/pfx/drive_c/users/steamuser/Documents/My\ Games ~/Games/*/logs 2>/dev/null | tr '\n' ':')}

@@ -371,7 +371,7 @@ def mem_check(what):
         return
     if gb < MEM_WARN_GB:
         print(f"warning: only {gb:.1f} GB RAM available before {what} (want >= {MEM_WARN_GB:g}). A big modded game can "
-              "get processes OOM-killed, agents included. Free RAM first (e.g. `vr-prep on`) and run no parallel agents.")
+              "get processes OOM-killed, agents included. Free RAM first (close browsers etc.) and run no parallel agents.")
     timeline(f"mem {what}", f"{gb:.1f}GB")
 
 
@@ -385,7 +385,7 @@ CONSOLE_KEYS = {" ": "space", ".": "period", "_": "underscore", "-": "minus", '"
 
 def console(win, command):
     """Bethesda VR console (B8). XTEST keys to the focused window one by one: `xdotool type` drops characters and
-    `--window` (XSendEvent) is ignored. Lowercased: Shift+O toggles MGO's Open Animation Replacer, which eats keys."""
+    `--window` (XSendEvent) is ignored. Lowercased: Shift+O opens Open Animation Replacer's menu in modded Skyrim, which eats keys."""
     need("xdotool")
     w = window(win)
     if not w:
